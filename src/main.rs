@@ -2,6 +2,7 @@ mod agent;
 mod cli;
 mod config;
 mod providers;
+mod skills;
 mod tools;
 
 #[tokio::main]

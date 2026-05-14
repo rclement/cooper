@@ -1,5 +1,6 @@
 use crate::config::{API_TYPES, AgentInstructions, ApiType, ModelConfig, ProviderConfig, Scope};
 use crate::providers::OutputChunk;
+use crate::skills::SkillRegistry;
 use crate::tools::{self, ToolRegistry};
 use crate::{agent, config};
 use anyhow::{Result, anyhow};
@@ -55,6 +56,11 @@ enum Command {
         #[command(subcommand)]
         subcommand: ToolsCommand,
     },
+    /// Manage and run skills
+    Skills {
+        #[command(subcommand)]
+        subcommand: SkillsCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -101,6 +107,25 @@ enum ToolsCommand {
         /// Parameters as --key value pairs
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         params: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsCommand {
+    /// List all available skills
+    List,
+    /// Run a prompt using a skill's system prompt
+    Run {
+        /// Skill name
+        skill_name: String,
+        /// The prompt to send
+        prompt: String,
+        /// Provider to use
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model ID to use
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -232,6 +257,65 @@ pub async fn run() -> Result<()> {
                 if !output.ends_with('\n') {
                     println!();
                 }
+            }
+        },
+
+        Command::Skills { subcommand } => match subcommand {
+            SkillsCommand::List => {
+                let registry = SkillRegistry::load()?;
+                if registry.all().is_empty() {
+                    println!("No skills found.");
+                    return Ok(());
+                }
+                for skill in registry.all() {
+                    let src = display_source(&skill.source);
+                    println!(
+                        "{:<20} {}  {}",
+                        style(&skill.name).bold(),
+                        skill.description,
+                        style(format!("[{}]", src)).dim()
+                    );
+                }
+            }
+            SkillsCommand::Run {
+                skill_name,
+                prompt,
+                provider,
+                model,
+            } => {
+                let skill_registry = SkillRegistry::load()?;
+                let skill = skill_registry
+                    .find(&skill_name)
+                    .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
+                let config = config::load()?;
+
+                // Inject skill body after the base system prompt; the rest of
+                // the context pipeline (agent instructions, context files,
+                // allowed_tools) runs unchanged via agent::run().
+                let system_prompt = if skill.system_prompt.is_empty() {
+                    None
+                } else {
+                    let mut s = config.system_prompt.clone();
+                    s.push_str(&format!(
+                        "\n\n<skill-instructions>\n{}\n</skill-instructions>",
+                        skill.system_prompt.trim_end()
+                    ));
+                    Some(s)
+                };
+
+                let tool_registry = ToolRegistry::load()?;
+                let mut printer = PhasePrinter::default();
+                agent::run(
+                    prompt,
+                    system_prompt,
+                    provider,
+                    model,
+                    &config,
+                    &tool_registry,
+                    &mut |chunk| printer.print(chunk),
+                )
+                .await?;
+                printer.finish();
             }
         },
 
