@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use console::style;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -21,6 +21,24 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start an interactive chat session (default when no command is given)
+    Chat {
+        /// Override the system prompt
+        #[arg(long)]
+        system_prompt: Option<String>,
+        /// Provider to use
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model ID to use
+        #[arg(long)]
+        model: Option<String>,
+        /// Disable loading agent instructions (AGENTS.md)
+        #[arg(long, conflicts_with = "agent_instructions")]
+        no_agent_instructions: bool,
+        /// Load agent instructions from a custom file instead of AGENTS.md
+        #[arg(long, value_name = "FILE")]
+        agent_instructions: Option<String>,
+    },
     /// Run a single prompt against a model
     Prompt {
         /// The prompt to send
@@ -133,6 +151,17 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Chat {
+            system_prompt,
+            provider,
+            model,
+            no_agent_instructions,
+            agent_instructions,
+        } => {
+            run_chat(system_prompt, provider, model, no_agent_instructions, agent_instructions)
+                .await?;
+        }
+
         Command::Prompt {
             prompt,
             system_prompt,
@@ -386,6 +415,62 @@ pub async fn run() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_chat(
+    system_prompt: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    no_agent_instructions: bool,
+    agent_instructions: Option<String>,
+) -> Result<()> {
+    let mut config = config::load()?;
+    if no_agent_instructions {
+        config.context.agent_instructions = Some(AgentInstructions::Enabled(false));
+    } else if let Some(file) = agent_instructions {
+        config.context.agent_instructions = Some(AgentInstructions::File(file));
+    }
+    let registry = ToolRegistry::load()?;
+
+    let mut start_printer = PhasePrinter::default();
+    let mut session = agent::Session::start(
+        system_prompt,
+        provider,
+        model,
+        &config,
+        &registry,
+        &mut |chunk| start_printer.print(chunk),
+    )
+    .await?;
+
+    let stdin = io::stdin();
+    loop {
+        print!("{} ", style(">").cyan().bold());
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        let n = stdin.lock().read_line(&mut line)?;
+        if n == 0 {
+            break; // EOF (Ctrl-D)
+        }
+
+        let input = line.trim().to_string();
+        if input.is_empty() {
+            continue;
+        }
+        if matches!(input.as_str(), "/exit" | "/quit") {
+            break;
+        }
+
+        let mut printer = PhasePrinter::default();
+        session
+            .send(input, &registry, &mut |chunk| printer.print(chunk))
+            .await?;
+        printer.finish();
+    }
+
+    println!("{}", style("bye").dim());
     Ok(())
 }
 

@@ -16,9 +16,11 @@ pub trait SessionLogger {
 
 const MAX_TURNS: usize = 20;
 
-pub async fn run(
-    prompt: String,
-    system_prompt: String,
+/// Run one agentic turn against an existing message history.
+/// Appends the assistant response (and any intermediate tool calls) to `messages`.
+/// The caller must push the user message before calling this.
+pub async fn run_turn(
+    messages: &mut Vec<Message>,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -28,14 +30,9 @@ pub async fn run(
 ) -> Result<String> {
     let tool_schemas = executor.schemas();
 
-    let mut messages = vec![
-        Message::new(Role::System, system_prompt),
-        Message::new(Role::User, prompt),
-    ];
-
     for _ in 0..MAX_TURNS {
         if let Some(ref mut l) = logger {
-            l.on_request(&messages);
+            l.on_request(messages);
         }
 
         let mut thinking_buf = String::new();
@@ -86,7 +83,9 @@ pub async fn run(
                 messages.push(Message::tool_result(tc.id, result));
             }
         } else {
-            return Ok(response.content);
+            let content = response.content.clone();
+            messages.push(response);
+            return Ok(content);
         }
     }
 
@@ -94,4 +93,21 @@ pub async fn run(
         "agent loop exceeded {} turns without a final response",
         MAX_TURNS
     ))
+}
+
+pub async fn run(
+    prompt: String,
+    system_prompt: String,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    executor: &impl ToolExecutor,
+    logger: Option<&mut dyn SessionLogger>,
+    on_chunk: &mut dyn FnMut(OutputChunk),
+) -> Result<String> {
+    let mut messages = vec![
+        Message::new(Role::System, system_prompt),
+        Message::new(Role::User, prompt),
+    ];
+    run_turn(&mut messages, base_url, api_key, model, executor, logger, on_chunk).await
 }
