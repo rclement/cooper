@@ -207,6 +207,24 @@ pub async fn run() -> Result<()> {
                 "default_model: {}",
                 config.default_model.as_deref().unwrap_or("(not set)")
             );
+            if config.context.files.is_empty() {
+                println!("context.files: (none)");
+            } else {
+                println!("context.files:");
+                for f in &config.context.files {
+                    println!("  - {}", f);
+                }
+            }
+            match &config.context.allowed_tools {
+                None => println!("context.allowed_tools: (all)"),
+                Some(tools) if tools.is_empty() => println!("context.allowed_tools: (none)"),
+                Some(tools) => {
+                    println!("context.allowed_tools:");
+                    for t in tools {
+                        println!("  - {}", t);
+                    }
+                }
+            }
             if config.providers.is_empty() {
                 println!("providers: (none)");
             } else {

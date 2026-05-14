@@ -135,6 +135,14 @@ pub fn all_oai_schemas() -> Vec<Value> {
     BUILTIN_TOOLS.iter().map(oai_schema).collect()
 }
 
+pub fn schemas_for(names: &[String]) -> Vec<Value> {
+    BUILTIN_TOOLS
+        .iter()
+        .filter(|t| names.iter().any(|n| n == t.name))
+        .map(oai_schema)
+        .collect()
+}
+
 pub fn execute_json(name: &str, args_json: &str) -> Result<String> {
     let tool = find(name).ok_or_else(|| anyhow!("unknown tool: {}", name))?;
     let raw: serde_json::Map<String, Value> = serde_json::from_str(args_json)

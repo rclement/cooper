@@ -53,6 +53,15 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ContextConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    /// None = not set = all tools allowed; Some([]) = explicitly empty = no tools allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -62,6 +71,8 @@ pub struct RawConfig {
     pub default_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +81,7 @@ pub struct ResolvedConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
+    pub context: ContextConfig,
 }
 
 pub enum Scope {
@@ -94,6 +106,18 @@ fn load_raw(path: &PathBuf) -> Result<RawConfig> {
     serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))
 }
 
+fn merge_context(base: Option<ContextConfig>, over: Option<ContextConfig>) -> ContextConfig {
+    match (base, over) {
+        (None, None) => ContextConfig::default(),
+        (Some(b), None) => b,
+        (None, Some(o)) => o,
+        (Some(b), Some(o)) => ContextConfig {
+            files: if o.files.is_empty() { b.files } else { o.files },
+            allowed_tools: o.allowed_tools.or(b.allowed_tools),
+        },
+    }
+}
+
 fn merge(base: RawConfig, over: RawConfig) -> RawConfig {
     RawConfig {
         system_prompt: over.system_prompt.or(base.system_prompt),
@@ -106,6 +130,7 @@ fn merge(base: RawConfig, over: RawConfig) -> RawConfig {
         },
         default_provider: over.default_provider.or(base.default_provider),
         default_model: over.default_model.or(base.default_model),
+        context: Some(merge_context(base.context, over.context)),
     }
 }
 
@@ -132,6 +157,7 @@ pub fn load() -> Result<ResolvedConfig> {
         providers: merged.providers.unwrap_or_default(),
         default_provider: merged.default_provider,
         default_model: merged.default_model,
+        context: merged.context.unwrap_or_default(),
     })
 }
 

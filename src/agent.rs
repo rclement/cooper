@@ -87,8 +87,32 @@ pub async fn run(
         model: model.clone(),
     });
 
-    let system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
-    let tool_schemas = tools::all_oai_schemas();
+    let mut system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+
+    if !config.context.files.is_empty() {
+        let mut file_context = String::new();
+        for file_path in &config.context.files {
+            match std::fs::read_to_string(file_path) {
+                Ok(content) => {
+                    file_context.push_str(&format!(
+                        "<file path=\"{}\">\n{}\n</file>\n",
+                        file_path, content
+                    ));
+                }
+                Err(e) => {
+                    eprintln!("warning: could not read context file {}: {}", file_path, e);
+                }
+            }
+        }
+        if !file_context.is_empty() {
+            system.push_str(&format!("\n\n<context>\n{}</context>", file_context));
+        }
+    }
+
+    let tool_schemas = match &config.context.allowed_tools {
+        None => tools::all_oai_schemas(),
+        Some(names) => tools::schemas_for(names),
+    };
 
     let mut messages = vec![
         Message::new(Role::System, system),
