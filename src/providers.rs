@@ -64,8 +64,14 @@ pub enum OutputChunk {
     },
     Thinking(String),
     Content(String),
-    ToolCall { name: String, args: String },
-    ToolResult { name: String, output: String },
+    ToolCall {
+        name: String,
+        args: String,
+    },
+    ToolResult {
+        name: String,
+        output: String,
+    },
 }
 
 pub async fn call(

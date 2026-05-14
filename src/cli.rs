@@ -1,12 +1,14 @@
 use crate::config::{API_TYPES, AgentInstructions, ApiType, ModelConfig, ProviderConfig, Scope};
 use crate::providers::OutputChunk;
-use crate::{agent, config, tools};
+use crate::tools::{self, ToolRegistry};
+use crate::{agent, config};
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use console::style;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::path::Path;
 use std::str::FromStr;
 
 #[derive(Parser)]
@@ -120,6 +122,7 @@ pub async fn run() -> Result<()> {
             } else if let Some(file) = agent_instructions {
                 config.context.agent_instructions = Some(AgentInstructions::File(file));
             }
+            let registry = ToolRegistry::load()?;
             let mut printer = PhasePrinter::default();
             agent::run(
                 prompt,
@@ -127,6 +130,7 @@ pub async fn run() -> Result<()> {
                 provider,
                 model,
                 &config,
+                &registry,
                 &mut |chunk| printer.print(chunk),
             )
             .await?;
@@ -183,8 +187,14 @@ pub async fn run() -> Result<()> {
 
         Command::Tools { subcommand } => match subcommand {
             ToolsCommand::List => {
+                let registry = ToolRegistry::load()?;
                 for tool in tools::BUILTIN_TOOLS {
-                    println!("{:<20} {}", tool.name, tool.description);
+                    println!(
+                        "{:<20} {}  {}",
+                        style(tool.name).bold(),
+                        tool.description,
+                        style("[builtin]").dim()
+                    );
                     for p in tool.params {
                         let req = if p.required { " (required)" } else { "" };
                         let def = p
@@ -194,12 +204,30 @@ pub async fn run() -> Result<()> {
                         println!("  --{:<18} <{}>{}{}", p.name, p.type_, req, def);
                     }
                 }
+                for tool in registry.custom_tools() {
+                    let src = display_source(&tool.source);
+                    println!(
+                        "{:<20} {}  {}",
+                        style(&tool.def.name).bold(),
+                        tool.def.description,
+                        style(format!("[{}]", src)).dim()
+                    );
+                    for (name, p) in &tool.def.parameters {
+                        let req = if p.required { " (required)" } else { "" };
+                        let def = p
+                            .default
+                            .as_ref()
+                            .map(|d| format!(" [default: {}]", d))
+                            .unwrap_or_default();
+                        println!("  --{:<18} <{}>{}{}", name, p.param_type, req, def);
+                    }
+                }
             }
             ToolsCommand::Run { tool_name, params } => {
-                let tool = tools::find(&tool_name)
-                    .ok_or_else(|| anyhow!("unknown tool: {}", tool_name))?;
+                let registry = ToolRegistry::load()?;
                 let args = parse_tool_params(&params)?;
-                let output = tools::execute(tool, &args)?;
+                let args_json = serde_json::to_string(&args)?;
+                let output = registry.execute_json(&tool_name, &args_json).await?;
                 print!("{}", output);
                 if !output.ends_with('\n') {
                     println!();
@@ -418,6 +446,15 @@ fn parse_tool_params(raw: &[String]) -> Result<HashMap<String, String>> {
         map.insert(key.to_string(), value);
     }
     Ok(map)
+}
+
+fn display_source(source: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = source.strip_prefix(&cwd) {
+            return rel.to_string_lossy().into_owned();
+        }
+    }
+    source.to_string_lossy().into_owned()
 }
 
 fn scope_label(scope: &Scope) -> &'static str {

@@ -1,6 +1,6 @@
 use crate::config::{AgentInstructions, ResolvedConfig};
 use crate::providers::{Message, OutputChunk, Role, call};
-use crate::tools;
+use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,7 @@ pub async fn run(
     provider_name: Option<String>,
     model_name: Option<String>,
     config: &ResolvedConfig,
+    registry: &ToolRegistry,
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<String> {
     let provider_key = provider_name
@@ -90,8 +91,8 @@ pub async fn run(
     };
 
     let tool_schemas = match &config.context.allowed_tools {
-        None => tools::all_oai_schemas(),
-        Some(names) => tools::schemas_for(names),
+        None => registry.all_oai_schemas(),
+        Some(names) => registry.schemas_for(names),
     };
 
     on_chunk(OutputChunk::SessionStart {
@@ -209,7 +210,9 @@ pub async fn run(
                     name: tc.name.clone(),
                     args: tc.arguments.clone(),
                 });
-                let result = tools::execute_json(&tc.name, &tc.arguments)
+                let result = registry
+                    .execute_json(&tc.name, &tc.arguments)
+                    .await
                     .unwrap_or_else(|e| format!("error: {}", e));
                 on_chunk(OutputChunk::ToolResult {
                     name: tc.name.clone(),
