@@ -1,6 +1,9 @@
+use crate::config::{ApiType, ModelConfig, ProviderConfig, Scope, API_TYPES};
 use crate::{agent, config};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(name = "cooper", about = "...damn good agent")]
@@ -21,7 +24,7 @@ enum Command {
         /// Provider to use
         #[arg(long)]
         provider: Option<String>,
-        /// Model to use
+        /// Model ID to use
         #[arg(long)]
         model: Option<String>,
     },
@@ -41,6 +44,27 @@ enum Command {
 enum ProvidersCommand {
     /// List all configured providers
     List,
+    /// Add a new provider (interactive if no args given)
+    Add {
+        /// Provider name
+        #[arg(long)]
+        name: Option<String>,
+        /// Base URL of the provider API
+        #[arg(long)]
+        base_url: Option<String>,
+        /// API type [default: openai-completions]
+        #[arg(long)]
+        api: Option<String>,
+        /// Add a model by ID (can be given multiple times)
+        #[arg(long = "model", value_name = "MODEL_ID")]
+        models: Vec<String>,
+        /// API key
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Store in ./cooper.yml instead of global ~/.cooper/settings.yml
+        #[arg(long)]
+        project: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -59,32 +83,42 @@ pub async fn run() -> Result<()> {
             println!("{}", response);
         }
 
-        Command::Providers { subcommand: ProvidersCommand::List } => {
-            let config = config::load()?;
-            if config.providers.is_empty() {
-                println!("No providers configured.");
-                return Ok(());
-            }
-            let mut names: Vec<&String> = config.providers.keys().collect();
-            names.sort();
-            for name in names {
-                let p = &config.providers[name];
-                let marker = if config.default_provider.as_deref() == Some(name) {
-                    " (default)"
-                } else {
-                    ""
-                };
-                println!("{}{}", name, marker);
-                println!("  base_url: {}", p.base_url);
-                println!("  api: {}", p.api);
-                if let Some(model) = &p.model {
-                    println!("  model: {}", model);
+        Command::Providers { subcommand } => match subcommand {
+            ProvidersCommand::List => {
+                let config = config::load()?;
+                if config.providers.is_empty() {
+                    println!("No providers configured.");
+                    return Ok(());
                 }
-                if p.api_key.is_some() {
-                    println!("  api_key: (set)");
+                let mut names: Vec<&String> = config.providers.keys().collect();
+                names.sort();
+                for name in names {
+                    let p = &config.providers[name];
+                    let marker = if config.default_provider.as_deref() == Some(name) {
+                        " (default)"
+                    } else {
+                        ""
+                    };
+                    println!("{}{}", name, marker);
+                    println!("  base_url: {}", p.base_url);
+                    println!("  api: {}", p.api);
+                    if !p.models.is_empty() {
+                        println!("  models:");
+                        for m in &p.models {
+                            println!("    - {}", m.id);
+                        }
+                    }
+                    if p.api_key.is_some() {
+                        println!("  api_key: (set)");
+                    }
                 }
             }
-        }
+
+            ProvidersCommand::Add { name, base_url, api, models, api_key, project } => {
+                let scope = if project { Scope::Project } else { Scope::Global };
+                providers_add(name, base_url, api, models, api_key, scope)?;
+            }
+        },
 
         Command::Settings { subcommand: SettingsCommand::Show } => {
             let config = config::load()?;
@@ -108,8 +142,11 @@ pub async fn run() -> Result<()> {
                     println!("  {}:", name);
                     println!("    base_url: {}", p.base_url);
                     println!("    api: {}", p.api);
-                    if let Some(model) = &p.model {
-                        println!("    model: {}", model);
+                    if !p.models.is_empty() {
+                        println!("    models:");
+                        for m in &p.models {
+                            println!("      - id: {}", m.id);
+                        }
                     }
                     if p.api_key.is_some() {
                         println!("    api_key: (set)");
@@ -120,4 +157,125 @@ pub async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn providers_add(
+    name: Option<String>,
+    base_url: Option<String>,
+    api: Option<String>,
+    models: Vec<String>,
+    api_key: Option<String>,
+    scope: Scope,
+) -> Result<()> {
+    match name {
+        None => {
+            if let Some((provider_name, provider_cfg)) = providers_add_interactive(&scope)? {
+                config::save_provider(&provider_name, provider_cfg, &scope)?;
+                println!("Provider '{}' saved to {}.", provider_name, scope_label(&scope));
+            }
+        }
+        Some(name) => {
+            let base_url = base_url
+                .ok_or_else(|| anyhow!("--base-url is required in non-interactive mode"))?;
+            let api_type = api
+                .as_deref()
+                .map(ApiType::from_str)
+                .transpose()?
+                .unwrap_or_default();
+            let provider_cfg = ProviderConfig {
+                base_url,
+                api: api_type,
+                models: models.into_iter().map(|id| ModelConfig { id }).collect(),
+                api_key,
+            };
+
+            if config::provider_exists_in_scope(&name, &scope)? {
+                return Err(anyhow!(
+                    "provider '{}' already exists in {}",
+                    name,
+                    scope_label(&scope),
+                ));
+            }
+
+            config::save_provider(&name, provider_cfg, &scope)?;
+            println!("Provider '{}' saved to {}.", name, scope_label(&scope));
+        }
+    }
+    Ok(())
+}
+
+/// Returns `None` if the user aborted (declined to overwrite an existing provider).
+fn providers_add_interactive(scope: &Scope) -> Result<Option<(String, ProviderConfig)>> {
+    let theme = ColorfulTheme::default();
+
+    let name: String = Input::with_theme(&theme)
+        .with_prompt("Provider name")
+        .interact_text()?;
+
+    // Check for duplicates right after getting the name so the user is not
+    // forced to fill every field before learning the provider already exists.
+    if config::provider_exists_in_scope(&name, scope)? {
+        let overwrite = Confirm::with_theme(&theme)
+            .with_prompt(format!(
+                "Provider '{}' already exists in {}. Overwrite?",
+                name,
+                scope_label(scope)
+            ))
+            .default(false)
+            .interact()?;
+        if !overwrite {
+            return Ok(None);
+        }
+    }
+
+    let base_url: String = Input::with_theme(&theme)
+        .with_prompt("Base URL")
+        .interact_text()?;
+
+    let api_idx = Select::with_theme(&theme)
+        .with_prompt("API type")
+        .items(API_TYPES)
+        .default(0)
+        .interact()?;
+    let api = ApiType::from_str(API_TYPES[api_idx])?;
+
+    let api_key: String = Input::with_theme(&theme)
+        .with_prompt("API key (leave empty to skip)")
+        .allow_empty(true)
+        .interact_text()?;
+
+    // Collect model IDs one at a time until the user leaves input empty.
+    let mut models: Vec<ModelConfig> = Vec::new();
+    loop {
+        let prompt = if models.is_empty() {
+            "Model ID (leave empty to skip)".to_string()
+        } else {
+            format!("Another model ID (leave empty to stop, {} so far)", models.len())
+        };
+        let model_id: String = Input::with_theme(&theme)
+            .with_prompt(prompt)
+            .allow_empty(true)
+            .interact_text()?;
+        if model_id.is_empty() {
+            break;
+        }
+        models.push(ModelConfig { id: model_id });
+    }
+
+    Ok(Some((
+        name,
+        ProviderConfig {
+            base_url,
+            api,
+            models,
+            api_key: if api_key.is_empty() { None } else { Some(api_key) },
+        },
+    )))
+}
+
+fn scope_label(scope: &Scope) -> &'static str {
+    match scope {
+        Scope::Global => "global settings (~/.cooper/settings.yml)",
+        Scope::Project => "project settings (cooper.yml)",
+    }
 }

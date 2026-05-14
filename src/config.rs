@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -19,20 +20,47 @@ impl fmt::Display for ApiType {
     }
 }
 
+impl FromStr for ApiType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "openai-completions" => Ok(ApiType::OpenaiCompletions),
+            _ => Err(anyhow!(
+                "unknown API type '{}'; supported: openai-completions",
+                s
+            )),
+        }
+    }
+}
+
+pub const API_TYPES: &[&str] = &["openai-completions"];
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelConfig {
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderConfig {
     pub base_url: String,
     #[serde(default)]
     pub api: ApiType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RawConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub providers: Option<HashMap<String, ProviderConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
 }
 
@@ -42,6 +70,22 @@ pub struct ResolvedConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
+}
+
+pub enum Scope {
+    Global,
+    Project,
+}
+
+fn scope_path(scope: &Scope) -> Result<PathBuf> {
+    match scope {
+        Scope::Global => {
+            let home =
+                dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
+            Ok(home.join(".cooper").join("settings.yml"))
+        }
+        Scope::Project => Ok(PathBuf::from("cooper.yml")),
+    }
 }
 
 fn load_raw(path: &PathBuf) -> Result<RawConfig> {
@@ -89,4 +133,43 @@ pub fn load() -> Result<ResolvedConfig> {
         default_provider: merged.default_provider,
         default_model: merged.default_model,
     })
+}
+
+/// Returns true if a provider with the given name already exists in the target scope's config file.
+pub fn provider_exists_in_scope(name: &str, scope: &Scope) -> Result<bool> {
+    let path = scope_path(scope)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = load_raw(&path)?;
+    Ok(raw
+        .providers
+        .as_ref()
+        .map(|p| p.contains_key(name))
+        .unwrap_or(false))
+}
+
+/// Writes a provider into the target scope's config file, creating it if absent.
+pub fn save_provider(name: &str, provider: ProviderConfig, scope: &Scope) -> Result<()> {
+    let path = scope_path(scope)?;
+
+    if let Scope::Global = scope {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creating directory {}", dir.display()))?;
+        }
+    }
+
+    let mut raw = if path.exists() {
+        load_raw(&path)?
+    } else {
+        RawConfig::default()
+    };
+
+    raw.providers
+        .get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), provider);
+
+    let content = serde_yaml::to_string(&raw).context("serializing config")?;
+    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
 }

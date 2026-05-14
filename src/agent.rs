@@ -70,10 +70,10 @@ pub async fn run(
         .ok_or_else(|| anyhow!("provider '{}' not found in configuration", provider_key))?;
 
     let model = model_name
-        .or_else(|| provider.model.clone())
+        .or_else(|| provider.models.first().map(|m| m.id.clone()))
         .or_else(|| config.default_model.clone())
         .ok_or_else(|| {
-            anyhow!("no model specified; set a model in provider config or use --model")
+            anyhow!("no model specified; add a model to the provider config or use --model")
         })?;
 
     let system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
