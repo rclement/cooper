@@ -1,8 +1,11 @@
 use crate::config::{ApiType, ModelConfig, ProviderConfig, Scope, API_TYPES};
+use crate::providers::OutputChunk;
 use crate::{agent, config};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use console::style;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use std::io::{self, Write};
 use std::str::FromStr;
 
 #[derive(Parser)]
@@ -79,8 +82,13 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Command::Prompt { prompt, system_prompt, provider, model } => {
             let config = config::load()?;
-            let response = agent::run(prompt, system_prompt, provider, model, &config).await?;
-            println!("{}", response);
+            let mut printer = PhasePrinter::default();
+            agent::run(
+                prompt, system_prompt, provider, model, &config,
+                &mut |chunk| printer.print(chunk),
+            )
+            .await?;
+            printer.finish();
         }
 
         Command::Providers { subcommand } => match subcommand {
@@ -277,5 +285,58 @@ fn scope_label(scope: &Scope) -> &'static str {
     match scope {
         Scope::Global => "global settings (~/.cooper/settings.yml)",
         Scope::Project => "project settings (cooper.yml)",
+    }
+}
+
+// ── Streaming output display ──────────────────────────────────────────────────
+
+#[derive(Default, PartialEq)]
+enum Phase {
+    #[default]
+    Start,
+    Thinking,
+    Content,
+}
+
+/// Prints streamed output chunks with distinct styling per phase.
+#[derive(Default)]
+struct PhasePrinter {
+    phase: Phase,
+}
+
+impl PhasePrinter {
+    fn print(&mut self, chunk: OutputChunk) {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+
+        match chunk {
+            OutputChunk::Thinking(text) => {
+                if self.phase != Phase::Thinking {
+                    // Print a header the first time we enter the thinking phase.
+                    let _ = writeln!(out, "{}", style("thinking…").dim().italic());
+                    self.phase = Phase::Thinking;
+                }
+                let _ = write!(out, "{}", style(&text).dim());
+                let _ = out.flush();
+            }
+            OutputChunk::Content(text) => {
+                if self.phase == Phase::Thinking {
+                    // Visually separate thinking from the response.
+                    let _ = writeln!(out);
+                    let _ = writeln!(out, "{}", style("───").dim());
+                } else if self.phase == Phase::Start {
+                    // No thinking phase — nothing to separate.
+                }
+                self.phase = Phase::Content;
+                let _ = write!(out, "{}", text);
+                let _ = out.flush();
+            }
+        }
+    }
+
+    fn finish(&self) {
+        // Ensure the prompt returns to a clean line regardless of whether the
+        // response ended with a newline.
+        println!();
     }
 }

@@ -1,5 +1,5 @@
 use crate::config::ResolvedConfig;
-use crate::providers::{call, Message, Role};
+use crate::providers::{call, Message, OutputChunk, Role};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ enum SessionEntry {
         messages: Vec<Message>,
     },
     Response {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
         message: Message,
         duration_ms: u64,
     },
@@ -57,6 +59,7 @@ pub async fn run(
     provider_name: Option<String>,
     model_name: Option<String>,
     config: &ResolvedConfig,
+    on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<String> {
     let provider_key = provider_name
         .or_else(|| config.default_provider.clone())
@@ -99,13 +102,26 @@ pub async fn run(
     )?;
     append(&path, &SessionEntry::Request { messages: messages.clone() })?;
 
+    // Wrap the caller's callback to also accumulate thinking for session storage.
+    let mut thinking_buf = String::new();
+    let mut wrapped = |chunk: OutputChunk| {
+        if let OutputChunk::Thinking(ref t) = chunk {
+            thinking_buf.push_str(t);
+        }
+        on_chunk(chunk);
+    };
+
     let start = Instant::now();
-    let response = call(provider, &model, messages).await?;
+    let response = call(provider, &model, messages, &mut wrapped).await?;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     append(
         &path,
-        &SessionEntry::Response { message: response.clone(), duration_ms },
+        &SessionEntry::Response {
+            thinking: if thinking_buf.is_empty() { None } else { Some(thinking_buf) },
+            message: response.clone(),
+            duration_ms,
+        },
     )?;
 
     Ok(response.content)
