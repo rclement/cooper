@@ -1,5 +1,6 @@
 use crate::config::ResolvedConfig;
 use crate::providers::{Message, OutputChunk, Role, call};
+use crate::tools;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
+
+const MAX_TURNS: usize = 20;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -79,17 +82,17 @@ pub async fn run(
             anyhow!("no model specified; add a model to the provider config or use --model")
         })?;
 
-    let system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+    on_chunk(OutputChunk::SessionStart {
+        provider: provider_key.clone(),
+        model: model.clone(),
+    });
 
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: system,
-        },
-        Message {
-            role: Role::User,
-            content: prompt,
-        },
+    let system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+    let tool_schemas = tools::all_oai_schemas();
+
+    let mut messages = vec![
+        Message::new(Role::System, system),
+        Message::new(Role::User, prompt),
     ];
 
     let session_id = Uuid::new_v4().to_string();
@@ -106,38 +109,70 @@ pub async fn run(
             started_at: Utc::now().to_rfc3339(),
         },
     )?;
-    append(
-        &path,
-        &SessionEntry::Request {
-            messages: messages.clone(),
-        },
-    )?;
 
-    // Wrap the caller's callback to also accumulate thinking for session storage.
-    let mut thinking_buf = String::new();
-    let mut wrapped = |chunk: OutputChunk| {
-        if let OutputChunk::Thinking(ref t) = chunk {
-            thinking_buf.push_str(t);
-        }
-        on_chunk(chunk);
-    };
-
-    let start = Instant::now();
-    let response = call(provider, &model, messages, &mut wrapped).await?;
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    append(
-        &path,
-        &SessionEntry::Response {
-            thinking: if thinking_buf.is_empty() {
-                None
-            } else {
-                Some(thinking_buf)
+    for _ in 0..MAX_TURNS {
+        append(
+            &path,
+            &SessionEntry::Request {
+                messages: messages.clone(),
             },
-            message: response.clone(),
-            duration_ms,
-        },
-    )?;
+        )?;
 
-    Ok(response.content)
+        let mut thinking_buf = String::new();
+        let mut wrapped = |chunk: OutputChunk| {
+            if let OutputChunk::Thinking(ref t) = chunk {
+                thinking_buf.push_str(t);
+            }
+            on_chunk(chunk);
+        };
+
+        let start = Instant::now();
+        let response = call(
+            provider,
+            &model,
+            messages.clone(),
+            &tool_schemas,
+            &mut wrapped,
+        )
+        .await?;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        drop(wrapped);
+
+        append(
+            &path,
+            &SessionEntry::Response {
+                thinking: if thinking_buf.is_empty() {
+                    None
+                } else {
+                    Some(thinking_buf)
+                },
+                message: response.clone(),
+                duration_ms,
+            },
+        )?;
+
+        if let Some(tool_calls) = response.tool_calls.clone() {
+            messages.push(response);
+            for tc in tool_calls {
+                on_chunk(OutputChunk::ToolCall {
+                    name: tc.name.clone(),
+                    args: tc.arguments.clone(),
+                });
+                let result = tools::execute_json(&tc.name, &tc.arguments)
+                    .unwrap_or_else(|e| format!("error: {}", e));
+                on_chunk(OutputChunk::ToolResult {
+                    name: tc.name.clone(),
+                    output: result.clone(),
+                });
+                messages.push(Message::tool_result(tc.id, result));
+            }
+        } else {
+            return Ok(response.content);
+        }
+    }
+
+    Err(anyhow!(
+        "agent loop exceeded {} turns without a final response",
+        MAX_TURNS
+    ))
 }

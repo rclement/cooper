@@ -1,10 +1,11 @@
 use crate::config::{API_TYPES, ApiType, ModelConfig, ProviderConfig, Scope};
 use crate::providers::OutputChunk;
-use crate::{agent, config};
+use crate::{agent, config, tools};
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use console::style;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::str::FromStr;
 
@@ -41,6 +42,11 @@ enum Command {
         #[command(subcommand)]
         subcommand: SettingsCommand,
     },
+    /// Manage and run tools
+    Tools {
+        #[command(subcommand)]
+        subcommand: ToolsCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -74,6 +80,20 @@ enum ProvidersCommand {
 enum SettingsCommand {
     /// Show resolved settings (global + project merged)
     Show,
+}
+
+#[derive(Subcommand)]
+enum ToolsCommand {
+    /// List all available tools
+    List,
+    /// Run a tool with --param value arguments
+    Run {
+        /// Tool name
+        tool_name: String,
+        /// Parameters as --key value pairs
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        params: Vec<String>,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -145,6 +165,32 @@ pub async fn run() -> Result<()> {
                     Scope::Global
                 };
                 providers_add(name, base_url, api, models, api_key, scope)?;
+            }
+        },
+
+        Command::Tools { subcommand } => match subcommand {
+            ToolsCommand::List => {
+                for tool in tools::BUILTIN_TOOLS {
+                    println!("{:<20} {}", tool.name, tool.description);
+                    for p in tool.params {
+                        let req = if p.required { " (required)" } else { "" };
+                        let def = p
+                            .default
+                            .map(|d| format!(" [default: {}]", d))
+                            .unwrap_or_default();
+                        println!("  --{:<18} <{}>{}{}", p.name, p.type_, req, def);
+                    }
+                }
+            }
+            ToolsCommand::Run { tool_name, params } => {
+                let tool = tools::find(&tool_name)
+                    .ok_or_else(|| anyhow!("unknown tool: {}", tool_name))?;
+                let args = parse_tool_params(&params)?;
+                let output = tools::execute(tool, &args)?;
+                print!("{}", output);
+                if !output.ends_with('\n') {
+                    println!();
+                }
             }
         },
 
@@ -314,6 +360,24 @@ fn providers_add_interactive(scope: &Scope) -> Result<Option<(String, ProviderCo
     )))
 }
 
+fn parse_tool_params(raw: &[String]) -> Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let key = raw[i]
+            .strip_prefix("--")
+            .ok_or_else(|| anyhow!("expected --param_name, got: {}", raw[i]))?;
+        i += 1;
+        let value = raw
+            .get(i)
+            .ok_or_else(|| anyhow!("missing value for --{}", key))?
+            .clone();
+        i += 1;
+        map.insert(key.to_string(), value);
+    }
+    Ok(map)
+}
+
 fn scope_label(scope: &Scope) -> &'static str {
     match scope {
         Scope::Global => "global settings (~/.cooper/settings.yml)",
@@ -343,9 +407,11 @@ impl PhasePrinter {
         let mut out = stdout.lock();
 
         match chunk {
+            OutputChunk::SessionStart { provider, model } => {
+                let _ = writeln!(out, "{}", style(format!("{} / {}", provider, model)).dim());
+            }
             OutputChunk::Thinking(text) => {
                 if self.phase != Phase::Thinking {
-                    // Print a header the first time we enter the thinking phase.
                     let _ = writeln!(out, "{}", style("thinking…").dim().italic());
                     self.phase = Phase::Thinking;
                 }
@@ -354,14 +420,41 @@ impl PhasePrinter {
             }
             OutputChunk::Content(text) => {
                 if self.phase == Phase::Thinking {
-                    // Visually separate thinking from the response.
                     let _ = writeln!(out);
                     let _ = writeln!(out, "{}", style("───").dim());
-                } else if self.phase == Phase::Start {
-                    // No thinking phase — nothing to separate.
                 }
                 self.phase = Phase::Content;
                 let _ = write!(out, "{}", text);
+                let _ = out.flush();
+            }
+            OutputChunk::ToolCall { name, args } => {
+                if self.phase == Phase::Thinking {
+                    let _ = writeln!(out);
+                }
+                self.phase = Phase::Content;
+                let _ = writeln!(
+                    out,
+                    "{} {}({})",
+                    style("→").cyan().bold(),
+                    style(&name).cyan(),
+                    style(&args).dim()
+                );
+                let _ = out.flush();
+            }
+            OutputChunk::ToolResult { name, output } => {
+                let lines = output.trim_end().lines().count();
+                let preview = if lines <= 1 {
+                    output.trim_end().to_string()
+                } else {
+                    format!("({} lines)", lines)
+                };
+                let _ = writeln!(
+                    out,
+                    "{} {} {}",
+                    style("←").cyan(),
+                    style(&name).dim(),
+                    style(&preview).dim()
+                );
                 let _ = out.flush();
             }
         }
