@@ -52,11 +52,22 @@ pub struct ProviderConfig {
     pub models: Vec<ModelConfig>,
 }
 
+/// Controls which file is loaded as agent instructions, or disables the feature.
+/// Serializes as a bare bool or string in YAML: `false`, `true`, or `"CLAUDE.md"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AgentInstructions {
+    Enabled(bool),
+    File(String),
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextConfig {
+    /// None = not set = all tools allowed; Some([]) = explicitly empty = no tools allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_instructions: Option<AgentInstructions>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
-    /// None = not set = all tools allowed; Some([]) = explicitly empty = no tools allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
 }
@@ -112,6 +123,7 @@ fn merge_context(base: Option<ContextConfig>, over: Option<ContextConfig>) -> Co
         (Some(b), None) => b,
         (None, Some(o)) => o,
         (Some(b), Some(o)) => ContextConfig {
+            agent_instructions: o.agent_instructions.or(b.agent_instructions),
             files: if o.files.is_empty() { b.files } else { o.files },
             allowed_tools: o.allowed_tools.or(b.allowed_tools),
         },

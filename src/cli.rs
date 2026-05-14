@@ -1,4 +1,4 @@
-use crate::config::{API_TYPES, ApiType, ModelConfig, ProviderConfig, Scope};
+use crate::config::{API_TYPES, AgentInstructions, ApiType, ModelConfig, ProviderConfig, Scope};
 use crate::providers::OutputChunk;
 use crate::{agent, config, tools};
 use anyhow::{Result, anyhow};
@@ -31,6 +31,12 @@ enum Command {
         /// Model ID to use
         #[arg(long)]
         model: Option<String>,
+        /// Disable loading agent instructions (AGENTS.md)
+        #[arg(long, conflicts_with = "agent_instructions")]
+        no_agent_instructions: bool,
+        /// Load agent instructions from a custom file instead of AGENTS.md
+        #[arg(long, value_name = "FILE")]
+        agent_instructions: Option<String>,
     },
     /// Manage model providers
     Providers {
@@ -105,8 +111,15 @@ pub async fn run() -> Result<()> {
             system_prompt,
             provider,
             model,
+            no_agent_instructions,
+            agent_instructions,
         } => {
-            let config = config::load()?;
+            let mut config = config::load()?;
+            if no_agent_instructions {
+                config.context.agent_instructions = Some(AgentInstructions::Enabled(false));
+            } else if let Some(file) = agent_instructions {
+                config.context.agent_instructions = Some(AgentInstructions::File(file));
+            }
             let mut printer = PhasePrinter::default();
             agent::run(
                 prompt,
@@ -207,6 +220,17 @@ pub async fn run() -> Result<()> {
                 "default_model: {}",
                 config.default_model.as_deref().unwrap_or("(not set)")
             );
+            match &config.context.agent_instructions {
+                None | Some(AgentInstructions::Enabled(true)) => {
+                    println!("context.agent_instructions: AGENTS.md (default)")
+                }
+                Some(AgentInstructions::Enabled(false)) => {
+                    println!("context.agent_instructions: disabled")
+                }
+                Some(AgentInstructions::File(f)) => {
+                    println!("context.agent_instructions: {}", f)
+                }
+            }
             if config.context.files.is_empty() {
                 println!("context.files: (none)");
             } else {
@@ -425,8 +449,29 @@ impl PhasePrinter {
         let mut out = stdout.lock();
 
         match chunk {
-            OutputChunk::SessionStart { provider, model } => {
+            OutputChunk::SessionStart {
+                provider,
+                model,
+                agent_instructions,
+                context_files,
+                tools,
+            } => {
                 let _ = writeln!(out, "{}", style(format!("{} / {}", provider, model)).dim());
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(path) = agent_instructions {
+                    parts.push(format!("instructions: {}", path));
+                }
+                if !context_files.is_empty() {
+                    parts.push(format!("files: {}", context_files.join(", ")));
+                }
+                match tools.as_deref() {
+                    None => {}
+                    Some([]) => parts.push("tools: (none)".to_string()),
+                    Some(names) => parts.push(format!("tools: {}", names.join(", "))),
+                }
+                if !parts.is_empty() {
+                    let _ = writeln!(out, "{}", style(parts.join("  ·  ")).dim());
+                }
             }
             OutputChunk::Thinking(text) => {
                 if self.phase != Phase::Thinking {

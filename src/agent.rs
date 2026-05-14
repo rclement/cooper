@@ -1,4 +1,4 @@
-use crate::config::ResolvedConfig;
+use crate::config::{AgentInstructions, ResolvedConfig};
 use crate::providers::{Message, OutputChunk, Role, call};
 use crate::tools;
 use anyhow::{Context, Result, anyhow};
@@ -82,12 +82,44 @@ pub async fn run(
             anyhow!("no model specified; add a model to the provider config or use --model")
         })?;
 
+    // Resolve context setup before emitting SessionStart so we can display it upfront.
+    let instructions_entry = match &config.context.agent_instructions {
+        None | Some(AgentInstructions::Enabled(true)) => Some(("AGENTS.md", false)),
+        Some(AgentInstructions::Enabled(false)) => None,
+        Some(AgentInstructions::File(name)) => Some((name.as_str(), true)),
+    };
+
+    let tool_schemas = match &config.context.allowed_tools {
+        None => tools::all_oai_schemas(),
+        Some(names) => tools::schemas_for(names),
+    };
+
     on_chunk(OutputChunk::SessionStart {
         provider: provider_key.clone(),
         model: model.clone(),
+        agent_instructions: instructions_entry.map(|(p, _)| p.to_string()),
+        context_files: config.context.files.clone(),
+        tools: config.context.allowed_tools.clone(),
     });
 
     let mut system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+
+    if let Some((path, warn_if_missing)) = instructions_entry {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                system.push_str(&format!(
+                    "\n\n<agent-instructions>\n{}\n</agent-instructions>",
+                    content.trim_end()
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if warn_if_missing {
+                    eprintln!("warning: agent instructions file not found: {}", path);
+                }
+            }
+            Err(e) => eprintln!("warning: could not read agent instructions {}: {}", path, e),
+        }
+    }
 
     if !config.context.files.is_empty() {
         let mut file_context = String::new();
@@ -108,11 +140,6 @@ pub async fn run(
             system.push_str(&format!("\n\n<context>\n{}</context>", file_context));
         }
     }
-
-    let tool_schemas = match &config.context.allowed_tools {
-        None => tools::all_oai_schemas(),
-        Some(names) => tools::schemas_for(names),
-    };
 
     let mut messages = vec![
         Message::new(Role::System, system),

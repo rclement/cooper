@@ -53,7 +53,15 @@ impl Message {
 
 #[derive(Debug, Clone)]
 pub enum OutputChunk {
-    SessionStart { provider: String, model: String },
+    SessionStart {
+        provider: String,
+        model: String,
+        /// None = disabled; Some(path) = file that will be loaded (may or may not exist)
+        agent_instructions: Option<String>,
+        context_files: Vec<String>,
+        /// None = all tools; Some(list) = restricted set (empty = no tools)
+        tools: Option<Vec<String>>,
+    },
     Thinking(String),
     Content(String),
     ToolCall { name: String, args: String },
