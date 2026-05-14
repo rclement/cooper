@@ -158,8 +158,14 @@ pub async fn run() -> Result<()> {
             no_agent_instructions,
             agent_instructions,
         } => {
-            run_chat(system_prompt, provider, model, no_agent_instructions, agent_instructions)
-                .await?;
+            run_chat(
+                system_prompt,
+                provider,
+                model,
+                no_agent_instructions,
+                agent_instructions,
+            )
+            .await?;
         }
 
         Command::Prompt {

@@ -249,8 +249,14 @@ pub async fn run(
     registry: &ToolRegistry,
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<String> {
-    let mut session =
-        Session::start(system_prompt, provider_name, model_name, config, registry, on_chunk)
-            .await?;
+    let mut session = Session::start(
+        system_prompt,
+        provider_name,
+        model_name,
+        config,
+        registry,
+        on_chunk,
+    )
+    .await?;
     session.send(prompt, registry, on_chunk).await
 }

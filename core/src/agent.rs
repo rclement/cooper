@@ -109,5 +109,14 @@ pub async fn run(
         Message::new(Role::System, system_prompt),
         Message::new(Role::User, prompt),
     ];
-    run_turn(&mut messages, base_url, api_key, model, executor, logger, on_chunk).await
+    run_turn(
+        &mut messages,
+        base_url,
+        api_key,
+        model,
+        executor,
+        logger,
+        on_chunk,
+    )
+    .await
 }

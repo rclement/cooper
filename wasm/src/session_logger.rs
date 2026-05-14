@@ -46,10 +46,8 @@ async fn open_db() -> Result<IdbDatabase, JsValue> {
                     if let Ok(db) = result.dyn_into::<IdbDatabase>() {
                         let params = IdbObjectStoreParameters::new();
                         params.set_auto_increment(true);
-                        let _ = db.create_object_store_with_optional_parameters(
-                            STORE_NAME,
-                            &params,
-                        );
+                        let _ =
+                            db.create_object_store_with_optional_parameters(STORE_NAME, &params);
                     }
                 }
             }
@@ -75,10 +73,7 @@ async fn open_db() -> Result<IdbDatabase, JsValue> {
         on_success.forget();
 
         let on_error = Closure::once(move |_: web_sys::Event| {
-            let _ = reject.call1(
-                &JsValue::UNDEFINED,
-                &JsValue::from_str("idb open failed"),
-            );
+            let _ = reject.call1(&JsValue::UNDEFINED, &JsValue::from_str("idb open failed"));
         });
         req2.set_onerror(Some(on_error.as_ref().unchecked_ref()));
         on_error.forget();
@@ -96,11 +91,10 @@ async fn write_entry(entry: SessionEntry) {
         Ok(db) => db,
         Err(_) => return,
     };
-    let tx =
-        match db.transaction_with_str_and_mode(STORE_NAME, IdbTransactionMode::Readwrite) {
-            Ok(tx) => tx,
-            Err(_) => return,
-        };
+    let tx = match db.transaction_with_str_and_mode(STORE_NAME, IdbTransactionMode::Readwrite) {
+        Ok(tx) => tx,
+        Err(_) => return,
+    };
     let store = match tx.object_store(STORE_NAME) {
         Ok(s) => s,
         Err(_) => return,
