@@ -561,3 +561,13 @@ impl ToolRegistry {
         &self.custom_tools
     }
 }
+
+impl cooper_core::ToolExecutor for ToolRegistry {
+    fn schemas(&self) -> Vec<serde_json::Value> {
+        self.all_oai_schemas()
+    }
+
+    async fn execute(&self, name: &str, args_json: &str) -> anyhow::Result<String> {
+        self.execute_json(name, args_json).await
+    }
+}

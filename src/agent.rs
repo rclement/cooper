@@ -1,15 +1,16 @@
 use crate::config::{AgentInstructions, ResolvedConfig};
-use crate::providers::{Message, OutputChunk, Role, call};
+use crate::providers::OutputChunk;
 use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
+use cooper_core::{Message, SessionLogger};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
 
-const MAX_TURNS: usize = 20;
+// ── Session logging ───────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -56,6 +57,45 @@ fn append(path: &PathBuf, entry: &SessionEntry) -> Result<()> {
     writeln!(file, "{}", line).context("writing session entry")
 }
 
+struct FileSessionLogger {
+    path: PathBuf,
+    turn_start: Option<Instant>,
+}
+
+impl SessionLogger for FileSessionLogger {
+    fn on_request(&mut self, messages: &[Message]) {
+        self.turn_start = Some(Instant::now());
+        if let Err(e) = append(
+            &self.path,
+            &SessionEntry::Request {
+                messages: messages.to_vec(),
+            },
+        ) {
+            eprintln!("warning: could not write session request: {}", e);
+        }
+    }
+
+    fn on_response(&mut self, thinking: Option<&str>, message: &Message) {
+        let duration_ms = self
+            .turn_start
+            .take()
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        if let Err(e) = append(
+            &self.path,
+            &SessionEntry::Response {
+                thinking: thinking.map(str::to_string),
+                message: message.clone(),
+                duration_ms,
+            },
+        ) {
+            eprintln!("warning: could not write session response: {}", e);
+        }
+    }
+}
+
+// ── CLI agent entry point ─────────────────────────────────────────────────────
+
 pub async fn run(
     prompt: String,
     system_prompt: Option<String>,
@@ -83,17 +123,18 @@ pub async fn run(
             anyhow!("no model specified; add a model to the provider config or use --model")
         })?;
 
-    // Resolve context setup before emitting SessionStart so we can display it upfront.
+    // Resolve context before emitting SessionStart so it can be displayed upfront.
     let instructions_entry = match &config.context.agent_instructions {
         None | Some(AgentInstructions::Enabled(true)) => Some(("AGENTS.md", false)),
         Some(AgentInstructions::Enabled(false)) => None,
         Some(AgentInstructions::File(name)) => Some((name.as_str(), true)),
     };
 
-    let tool_schemas = match &config.context.allowed_tools {
+    let tool_schemas_for_display = match &config.context.allowed_tools {
         None => registry.all_oai_schemas(),
         Some(names) => registry.schemas_for(names),
     };
+    drop(tool_schemas_for_display); // only used for SessionStart display
 
     on_chunk(OutputChunk::SessionStart {
         provider: provider_key.clone(),
@@ -142,15 +183,10 @@ pub async fn run(
         }
     }
 
-    let mut messages = vec![
-        Message::new(Role::System, system),
-        Message::new(Role::User, prompt),
-    ];
-
+    // Set up session file before the loop.
     let session_id = Uuid::new_v4().to_string();
     let cwd = std::env::current_dir().context("getting current directory")?;
     let path = session_file(&session_id)?;
-
     append(
         &path,
         &SessionEntry::Session {
@@ -162,71 +198,23 @@ pub async fn run(
         },
     )?;
 
-    for _ in 0..MAX_TURNS {
-        append(
-            &path,
-            &SessionEntry::Request {
-                messages: messages.clone(),
-            },
-        )?;
+    let mut logger = FileSessionLogger {
+        path,
+        turn_start: None,
+    };
 
-        let mut thinking_buf = String::new();
-        let mut wrapped = |chunk: OutputChunk| {
-            if let OutputChunk::Thinking(ref t) = chunk {
-                thinking_buf.push_str(t);
-            }
-            on_chunk(chunk);
-        };
+    // Wrap on_chunk to convert core OutputChunk → CLI OutputChunk.
+    let mut wrapped_chunk = |c: cooper_core::OutputChunk| on_chunk(OutputChunk::from(c));
 
-        let start = Instant::now();
-        let response = call(
-            provider,
-            &model,
-            messages.clone(),
-            &tool_schemas,
-            &mut wrapped,
-        )
-        .await?;
-        let duration_ms = start.elapsed().as_millis() as u64;
-        drop(wrapped);
-
-        append(
-            &path,
-            &SessionEntry::Response {
-                thinking: if thinking_buf.is_empty() {
-                    None
-                } else {
-                    Some(thinking_buf)
-                },
-                message: response.clone(),
-                duration_ms,
-            },
-        )?;
-
-        if let Some(tool_calls) = response.tool_calls.clone() {
-            messages.push(response);
-            for tc in tool_calls {
-                on_chunk(OutputChunk::ToolCall {
-                    name: tc.name.clone(),
-                    args: tc.arguments.clone(),
-                });
-                let result = registry
-                    .execute_json(&tc.name, &tc.arguments)
-                    .await
-                    .unwrap_or_else(|e| format!("error: {}", e));
-                on_chunk(OutputChunk::ToolResult {
-                    name: tc.name.clone(),
-                    output: result.clone(),
-                });
-                messages.push(Message::tool_result(tc.id, result));
-            }
-        } else {
-            return Ok(response.content);
-        }
-    }
-
-    Err(anyhow!(
-        "agent loop exceeded {} turns without a final response",
-        MAX_TURNS
-    ))
+    cooper_core::agent::run(
+        prompt,
+        system,
+        &provider.base_url,
+        provider.api_key.as_deref().unwrap_or(""),
+        &model,
+        registry,
+        Some(&mut logger),
+        &mut wrapped_chunk,
+    )
+    .await
 }

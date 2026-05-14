@@ -594,7 +594,7 @@ impl PhasePrinter {
                     let _ = writeln!(out, "{}", style(parts.join("  ·  ")).dim());
                 }
             }
-            OutputChunk::Thinking(text) => {
+            OutputChunk::Thinking { text } => {
                 if self.phase != Phase::Thinking {
                     let _ = writeln!(out, "{}", style("thinking…").dim().italic());
                     self.phase = Phase::Thinking;
@@ -602,7 +602,7 @@ impl PhasePrinter {
                 let _ = write!(out, "{}", style(&text).dim());
                 let _ = out.flush();
             }
-            OutputChunk::Content(text) => {
+            OutputChunk::Content { text } => {
                 if self.phase == Phase::Thinking {
                     let _ = writeln!(out);
                     let _ = writeln!(out, "{}", style("───").dim());
