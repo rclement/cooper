@@ -138,18 +138,17 @@ impl Session {
             Some(AgentInstructions::File(name)) => Some((name.as_str(), true)),
         };
 
-        let tool_schemas_for_display = match &config.context.allowed_tools {
-            None => registry.all_oai_schemas(),
-            Some(names) => registry.schemas_for(names),
+        let resolved_tools: Vec<String> = match &config.context.allowed_tools {
+            None => registry.all_names(),
+            Some(names) => names.clone(),
         };
-        drop(tool_schemas_for_display);
 
         on_chunk(OutputChunk::SessionStart {
             provider: provider_key.clone(),
             model: model.clone(),
             agent_instructions: instructions_entry.map(|(p, _)| p.to_string()),
             context_files: config.context.files.clone(),
-            tools: config.context.allowed_tools.clone(),
+            tools: Some(resolved_tools),
         });
 
         let mut system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());

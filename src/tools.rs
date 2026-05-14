@@ -507,24 +507,15 @@ impl ToolRegistry {
         Ok(Self { custom_tools })
     }
 
+    pub fn all_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = BUILTIN_TOOLS.iter().map(|t| t.name.to_string()).collect();
+        names.extend(self.custom_tools.iter().map(|t| t.def.name.clone()));
+        names
+    }
+
     pub fn all_oai_schemas(&self) -> Vec<Value> {
         let mut schemas: Vec<Value> = BUILTIN_TOOLS.iter().map(oai_schema).collect();
         schemas.extend(self.custom_tools.iter().map(|t| t.oai_schema()));
-        schemas
-    }
-
-    pub fn schemas_for(&self, names: &[String]) -> Vec<Value> {
-        let mut schemas = Vec::new();
-        for tool in BUILTIN_TOOLS {
-            if names.iter().any(|n| n == tool.name) {
-                schemas.push(oai_schema(tool));
-            }
-        }
-        for tool in &self.custom_tools {
-            if names.iter().any(|n| n == &tool.def.name) {
-                schemas.push(tool.oai_schema());
-            }
-        }
         schemas
     }
 
