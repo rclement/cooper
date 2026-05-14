@@ -1,10 +1,10 @@
-use crate::config::{ApiType, ModelConfig, ProviderConfig, Scope, API_TYPES};
+use crate::config::{API_TYPES, ApiType, ModelConfig, ProviderConfig, Scope};
 use crate::providers::OutputChunk;
 use crate::{agent, config};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use console::style;
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::io::{self, Write};
 use std::str::FromStr;
 
@@ -80,11 +80,20 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Prompt { prompt, system_prompt, provider, model } => {
+        Command::Prompt {
+            prompt,
+            system_prompt,
+            provider,
+            model,
+        } => {
             let config = config::load()?;
             let mut printer = PhasePrinter::default();
             agent::run(
-                prompt, system_prompt, provider, model, &config,
+                prompt,
+                system_prompt,
+                provider,
+                model,
+                &config,
                 &mut |chunk| printer.print(chunk),
             )
             .await?;
@@ -122,13 +131,26 @@ pub async fn run() -> Result<()> {
                 }
             }
 
-            ProvidersCommand::Add { name, base_url, api, models, api_key, project } => {
-                let scope = if project { Scope::Project } else { Scope::Global };
+            ProvidersCommand::Add {
+                name,
+                base_url,
+                api,
+                models,
+                api_key,
+                project,
+            } => {
+                let scope = if project {
+                    Scope::Project
+                } else {
+                    Scope::Global
+                };
                 providers_add(name, base_url, api, models, api_key, scope)?;
             }
         },
 
-        Command::Settings { subcommand: SettingsCommand::Show } => {
+        Command::Settings {
+            subcommand: SettingsCommand::Show,
+        } => {
             let config = config::load()?;
             println!("system_prompt: {}", config.system_prompt);
             println!(
@@ -179,7 +201,11 @@ fn providers_add(
         None => {
             if let Some((provider_name, provider_cfg)) = providers_add_interactive(&scope)? {
                 config::save_provider(&provider_name, provider_cfg, &scope)?;
-                println!("Provider '{}' saved to {}.", provider_name, scope_label(&scope));
+                println!(
+                    "Provider '{}' saved to {}.",
+                    provider_name,
+                    scope_label(&scope)
+                );
             }
         }
         Some(name) => {
@@ -258,7 +284,10 @@ fn providers_add_interactive(scope: &Scope) -> Result<Option<(String, ProviderCo
         let prompt = if models.is_empty() {
             "Model ID (leave empty to skip)".to_string()
         } else {
-            format!("Another model ID (leave empty to stop, {} so far)", models.len())
+            format!(
+                "Another model ID (leave empty to stop, {} so far)",
+                models.len()
+            )
         };
         let model_id: String = Input::with_theme(&theme)
             .with_prompt(prompt)
@@ -276,7 +305,11 @@ fn providers_add_interactive(scope: &Scope) -> Result<Option<(String, ProviderCo
             base_url,
             api,
             models,
-            api_key: if api_key.is_empty() { None } else { Some(api_key) },
+            api_key: if api_key.is_empty() {
+                None
+            } else {
+                Some(api_key)
+            },
         },
     )))
 }

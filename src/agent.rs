@@ -1,6 +1,6 @@
 use crate::config::ResolvedConfig;
-use crate::providers::{call, Message, OutputChunk, Role};
-use anyhow::{anyhow, Context, Result};
+use crate::providers::{Message, OutputChunk, Role, call};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -82,8 +82,14 @@ pub async fn run(
     let system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
 
     let messages = vec![
-        Message { role: Role::System, content: system },
-        Message { role: Role::User, content: prompt },
+        Message {
+            role: Role::System,
+            content: system,
+        },
+        Message {
+            role: Role::User,
+            content: prompt,
+        },
     ];
 
     let session_id = Uuid::new_v4().to_string();
@@ -100,7 +106,12 @@ pub async fn run(
             started_at: Utc::now().to_rfc3339(),
         },
     )?;
-    append(&path, &SessionEntry::Request { messages: messages.clone() })?;
+    append(
+        &path,
+        &SessionEntry::Request {
+            messages: messages.clone(),
+        },
+    )?;
 
     // Wrap the caller's callback to also accumulate thinking for session storage.
     let mut thinking_buf = String::new();
@@ -118,7 +129,11 @@ pub async fn run(
     append(
         &path,
         &SessionEntry::Response {
-            thinking: if thinking_buf.is_empty() { None } else { Some(thinking_buf) },
+            thinking: if thinking_buf.is_empty() {
+                None
+            } else {
+                Some(thinking_buf)
+            },
             message: response.clone(),
             duration_ms,
         },

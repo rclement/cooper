@@ -152,7 +152,10 @@ async fn openai_completions(
     messages: Vec<Message>,
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<Message> {
-    let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        provider.base_url.trim_end_matches('/')
+    );
     let api_key = provider.api_key.as_deref().unwrap_or("");
 
     let oai_messages: Vec<OaiMessage> = messages
@@ -171,7 +174,11 @@ async fn openai_completions(
     let mut stream = Client::new()
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
-        .json(&OaiRequest { model: model.to_string(), messages: oai_messages, stream: true })
+        .json(&OaiRequest {
+            model: model.to_string(),
+            messages: oai_messages,
+            stream: true,
+        })
         .send()
         .await?
         .error_for_status()?
@@ -243,5 +250,8 @@ async fn openai_completions(
         on_chunk(out);
     }
 
-    Ok(Message { role: Role::Assistant, content: full_content })
+    Ok(Message {
+        role: Role::Assistant,
+        content: full_content,
+    })
 }

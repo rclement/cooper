@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -89,8 +89,8 @@ fn scope_path(scope: &Scope) -> Result<PathBuf> {
 }
 
 fn load_raw(path: &PathBuf) -> Result<RawConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))
 }
 
