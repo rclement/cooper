@@ -43,6 +43,9 @@ enum Command {
     Prompt {
         /// The prompt to send
         prompt: String,
+        /// Activate a skill's instructions for this prompt
+        #[arg(long, value_name = "SKILL")]
+        skill: Option<String>,
         /// Override the system prompt
         #[arg(long)]
         system_prompt: Option<String>,
@@ -132,19 +135,6 @@ enum ToolsCommand {
 enum SkillsCommand {
     /// List all available skills
     List,
-    /// Run a prompt using a skill's system prompt
-    Run {
-        /// Skill name
-        skill_name: String,
-        /// The prompt to send
-        prompt: String,
-        /// Provider to use
-        #[arg(long)]
-        provider: Option<String>,
-        /// Model ID to use
-        #[arg(long)]
-        model: Option<String>,
-    },
 }
 
 pub async fn run() -> Result<()> {
@@ -170,6 +160,7 @@ pub async fn run() -> Result<()> {
 
         Command::Prompt {
             prompt,
+            skill,
             system_prompt,
             provider,
             model,
@@ -182,11 +173,30 @@ pub async fn run() -> Result<()> {
             } else if let Some(file) = agent_instructions {
                 config.context.agent_instructions = Some(AgentInstructions::File(file));
             }
+
+            let (resolved_system, active_skill) = if let Some(skill_name) = skill {
+                let skill_registry = SkillRegistry::load()?;
+                let skill = skill_registry
+                    .find(&skill_name)
+                    .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
+                let mut s = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+                if !skill.system_prompt.is_empty() {
+                    s.push_str(&format!(
+                        "\n\n<skill-instructions>\n{}\n</skill-instructions>",
+                        skill.system_prompt.trim_end()
+                    ));
+                }
+                (Some(s), Some(skill_name))
+            } else {
+                (system_prompt, None)
+            };
+
             let registry = ToolRegistry::load()?;
             let mut printer = PhasePrinter::default();
             agent::run(
                 prompt,
-                system_prompt,
+                resolved_system,
+                active_skill,
                 provider,
                 model,
                 &config,
@@ -248,6 +258,28 @@ pub async fn run() -> Result<()> {
         Command::Tools { subcommand } => match subcommand {
             ToolsCommand::List => {
                 let registry = ToolRegistry::load()?;
+                let skill_registry = SkillRegistry::load()?;
+                if let Some(schema) = agent::activate_skill_schema(&skill_registry) {
+                    let f = &schema["function"];
+                    let name = f["name"].as_str().unwrap_or("activate_skill");
+                    let desc = f["description"].as_str().unwrap_or("");
+                    println!("{:<20}  {}", style(name).bold(), style("[meta]").dim());
+                    for line in desc.lines() {
+                        println!("  {}", line);
+                    }
+                    if let Some(props) = f["parameters"]["properties"].as_object() {
+                        for (pname, pval) in props {
+                            let ptype = pval["type"].as_str().unwrap_or("string");
+                            println!("  --{:<18} <{}>  (required)", pname, ptype);
+                            if let Some(variants) = pval["enum"].as_array() {
+                                let names: Vec<&str> =
+                                    variants.iter().filter_map(|v| v.as_str()).collect();
+                                println!("    enum: {}", names.join(", "));
+                            }
+                        }
+                    }
+                    println!();
+                }
                 for tool in tools::BUILTIN_TOOLS {
                     println!(
                         "{:<20} {}  {}",
@@ -311,46 +343,6 @@ pub async fn run() -> Result<()> {
                         style(format!("[{}]", src)).dim()
                     );
                 }
-            }
-            SkillsCommand::Run {
-                skill_name,
-                prompt,
-                provider,
-                model,
-            } => {
-                let skill_registry = SkillRegistry::load()?;
-                let skill = skill_registry
-                    .find(&skill_name)
-                    .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
-                let config = config::load()?;
-
-                // Inject skill body after the base system prompt; the rest of
-                // the context pipeline (agent instructions, context files,
-                // allowed_tools) runs unchanged via agent::run().
-                let system_prompt = if skill.system_prompt.is_empty() {
-                    None
-                } else {
-                    let mut s = config.system_prompt.clone();
-                    s.push_str(&format!(
-                        "\n\n<skill-instructions>\n{}\n</skill-instructions>",
-                        skill.system_prompt.trim_end()
-                    ));
-                    Some(s)
-                };
-
-                let tool_registry = ToolRegistry::load()?;
-                let mut printer = PhasePrinter::default();
-                agent::run(
-                    prompt,
-                    system_prompt,
-                    provider,
-                    model,
-                    &config,
-                    &tool_registry,
-                    &mut |chunk| printer.print(chunk),
-                )
-                .await?;
-                printer.finish();
             }
         },
 
@@ -437,15 +429,18 @@ async fn run_chat(
     } else if let Some(file) = agent_instructions {
         config.context.agent_instructions = Some(AgentInstructions::File(file));
     }
-    let registry = ToolRegistry::load()?;
+    let tool_registry = ToolRegistry::load()?;
+    let skill_registry = SkillRegistry::load()?;
 
     let mut start_printer = PhasePrinter::default();
     let mut session = agent::Session::start(
         system_prompt,
+        None,
         provider,
         model,
         &config,
-        &registry,
+        &tool_registry,
+        &skill_registry,
         &mut |chunk| start_printer.print(chunk),
     )
     .await?;
@@ -471,7 +466,9 @@ async fn run_chat(
 
         let mut printer = PhasePrinter::default();
         session
-            .send(input, &registry, &mut |chunk| printer.print(chunk))
+            .send(input, &tool_registry, &skill_registry, &mut |chunk| {
+                printer.print(chunk)
+            })
             .await?;
         printer.finish();
     }
@@ -667,6 +664,8 @@ impl PhasePrinter {
                 agent_instructions,
                 context_files,
                 tools,
+                skills,
+                active_skill,
             } => {
                 let _ = writeln!(out, "{}", style(format!("{} / {}", provider, model)).dim());
                 let mut parts: Vec<String> = Vec::new();
@@ -680,6 +679,11 @@ impl PhasePrinter {
                     None => {}
                     Some([]) => parts.push("tools: (none)".to_string()),
                     Some(names) => parts.push(format!("tools: {}", names.join(", "))),
+                }
+                if let Some(name) = active_skill {
+                    parts.push(format!("skill: {}", name));
+                } else if !skills.is_empty() {
+                    parts.push(format!("skills: {}", skills.join(", ")));
                 }
                 if !parts.is_empty() {
                     let _ = writeln!(out, "{}", style(parts.join("  ·  ")).dim());

@@ -10,6 +10,10 @@ pub enum OutputChunk {
         context_files: Vec<String>,
         /// None = all tools; Some(list) = restricted set (empty = no tools)
         tools: Option<Vec<String>>,
+        /// Available skills (chat) or the single active skill (prompt --skill)
+        skills: Vec<String>,
+        /// Name of the skill pre-loaded into the system prompt (prompt --skill only)
+        active_skill: Option<String>,
     },
     Thinking {
         text: String,

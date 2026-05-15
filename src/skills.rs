@@ -133,6 +133,10 @@ impl SkillRegistry {
         Ok(Self { skills })
     }
 
+    pub fn empty() -> Self {
+        Self { skills: vec![] }
+    }
+
     pub fn all(&self) -> &[Skill] {
         &self.skills
     }

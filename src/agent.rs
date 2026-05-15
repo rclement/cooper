@@ -1,10 +1,12 @@
 use crate::config::{AgentInstructions, ResolvedConfig};
 use crate::output::OutputChunk;
+use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use cooper_core::{ApiType, Message, Role, SessionLogger, Usage};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -97,6 +99,150 @@ impl SessionLogger for FileSessionLogger {
     }
 }
 
+// ── Skill-aware executor ──────────────────────────────────────────────────────
+
+/// Wraps the tool registry and skill registry for a single turn.
+/// Intercepts `activate_skill` calls, returning the skill body as the tool
+/// result and storing it so the session can patch the system prompt afterward.
+struct SessionRegistry<'a> {
+    tools: &'a ToolRegistry,
+    skills: &'a SkillRegistry,
+    activated: RefCell<Option<String>>, // skill body if activated this turn
+}
+
+impl<'a> SessionRegistry<'a> {
+    fn new(tools: &'a ToolRegistry, skills: &'a SkillRegistry) -> Self {
+        Self {
+            tools,
+            skills,
+            activated: RefCell::new(None),
+        }
+    }
+
+    fn take_activated(&self) -> Option<String> {
+        self.activated.borrow_mut().take()
+    }
+}
+
+/// Builds the `activate_skill` tool schema from the available skill registry.
+/// Returns `None` when no skills are registered (tool should not be exposed).
+pub fn activate_skill_schema(skills: &SkillRegistry) -> Option<serde_json::Value> {
+    let skill_list = skills.all();
+    if skill_list.is_empty() {
+        return None;
+    }
+    let catalog = skill_list
+        .iter()
+        .map(|s| {
+            if s.description.is_empty() {
+                s.name.clone()
+            } else {
+                format!("- {}: {}", s.name, s.description)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let valid_names: Vec<serde_json::Value> = skill_list
+        .iter()
+        .map(|s| serde_json::Value::String(s.name.clone()))
+        .collect();
+    Some(serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "activate_skill",
+            "description": format!(
+                "Load specialized instructions for the current task. \
+                Call this BEFORE starting work whenever the user's request matches a skill's domain — do not wait to be asked explicitly.\n\n\
+                Available skills:\n{}",
+                catalog
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "Name of the skill to activate",
+                        "enum": valid_names
+                    }
+                },
+                "required": ["skill"]
+            }
+        }
+    }))
+}
+
+impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
+    fn schemas(&self) -> Vec<serde_json::Value> {
+        let mut schemas = self.tools.all_oai_schemas();
+        if let Some(schema) = activate_skill_schema(self.skills) {
+            schemas.push(schema);
+        }
+        schemas
+    }
+
+    async fn execute(&self, name: &str, args_json: &str) -> anyhow::Result<String> {
+        if name == "activate_skill" {
+            let args: serde_json::Value =
+                serde_json::from_str(args_json).context("parsing activate_skill arguments")?;
+            let skill_name = args["skill"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing 'skill' parameter"))?;
+            let skill = self
+                .skills
+                .find(skill_name)
+                .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
+            // Store raw body for system prompt patching (unchanged by wrapping below)
+            *self.activated.borrow_mut() = Some(skill.system_prompt.clone());
+
+            // Only bundled (directory-based) skills have a dedicated directory to scan.
+            // Flat skills live directly in a shared skills/ folder — scanning their parent
+            // would expose sibling skill files as resources, which is wrong.
+            let is_bundled = skill.source.file_name().and_then(|n| n.to_str()) == Some("skill.md");
+            let skill_dir = if is_bundled {
+                skill.source.parent()
+            } else {
+                None
+            };
+
+            let resources: Vec<String> = skill_dir
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .map(|entries| {
+                    let mut files: Vec<String> = entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_file() && e.path() != skill.source)
+                        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                        .collect();
+                    files.sort();
+                    files
+                })
+                .unwrap_or_default();
+
+            let mut result = format!("<skill_content name=\"{}\">", skill_name);
+
+            if !skill.system_prompt.is_empty() {
+                result.push('\n');
+                result.push_str(skill.system_prompt.trim_end());
+            }
+
+            if let Some(dir) = skill_dir {
+                result.push_str(&format!("\n\nSkill directory: {}", dir.display()));
+            }
+
+            if !resources.is_empty() {
+                result.push_str("\n\n<skill_resources>");
+                for file in &resources {
+                    result.push_str(&format!("\n  <file>{}</file>", file));
+                }
+                result.push_str("\n</skill_resources>");
+            }
+
+            result.push_str("\n</skill_content>");
+            return Ok(result);
+        }
+        self.tools.execute_json(name, args_json).await
+    }
+}
+
 // ── Multi-turn chat session ───────────────────────────────────────────────────
 
 pub struct Session {
@@ -112,10 +258,12 @@ impl Session {
     /// Set up provider, build the system prompt, emit `SessionStart`, and create the session log.
     pub async fn start(
         system_prompt: Option<String>,
+        active_skill: Option<String>,
         provider_name: Option<String>,
         model_name: Option<String>,
         config: &ResolvedConfig,
-        registry: &ToolRegistry,
+        tool_registry: &ToolRegistry,
+        skill_registry: &SkillRegistry,
         on_chunk: &mut dyn FnMut(OutputChunk),
     ) -> Result<Self> {
         let provider_key = provider_name
@@ -143,9 +291,15 @@ impl Session {
         };
 
         let resolved_tools: Vec<String> = match &config.context.allowed_tools {
-            None => registry.all_names(),
+            None => tool_registry.all_names(),
             Some(names) => names.clone(),
         };
+
+        let skill_names: Vec<String> = skill_registry
+            .all()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
 
         on_chunk(OutputChunk::SessionStart {
             provider: provider_key.clone(),
@@ -153,9 +307,24 @@ impl Session {
             agent_instructions: instructions_entry.map(|(p, _)| p.to_string()),
             context_files: config.context.files.clone(),
             tools: Some(resolved_tools),
+            skills: skill_names,
+            active_skill,
         });
 
         let mut system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
+
+        if !skill_registry.all().is_empty() {
+            let names: Vec<&str> = skill_registry
+                .all()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            system.push_str(&format!(
+                "\n\nYou have access to skill modules ({}) via the `activate_skill` tool. \
+                Activate the most relevant skill at the start of any task that matches its domain.",
+                names.join(", ")
+            ));
+        }
 
         if let Some((path, warn_if_missing)) = instructions_entry {
             match std::fs::read_to_string(path) {
@@ -222,47 +391,68 @@ impl Session {
     }
 
     /// Send a user message and stream the response, keeping history for follow-up turns.
+    /// If the model calls `activate_skill`, the skill body is injected into the system
+    /// prompt so subsequent turns have it persistently.
     pub async fn send(
         &mut self,
         input: String,
-        registry: &ToolRegistry,
+        tool_registry: &ToolRegistry,
+        skill_registry: &SkillRegistry,
         on_chunk: &mut dyn FnMut(OutputChunk),
     ) -> Result<String> {
         self.messages.push(Message::new(Role::User, input));
+        let executor = SessionRegistry::new(tool_registry, skill_registry);
         let mut wrapped = |c: cooper_core::OutputChunk| on_chunk(OutputChunk::from(c));
-        cooper_core::agent::run_turn(
+        let result = cooper_core::agent::run_turn(
             &mut self.messages,
             &self.api_type,
             &self.base_url,
             &self.api_key,
             &self.model,
-            registry,
+            &executor,
             Some(&mut self.logger),
             &mut wrapped,
         )
-        .await
+        .await?;
+
+        if let Some(body) = executor.take_activated() {
+            if let Some(sys) = self.messages.first_mut() {
+                sys.content.push_str(&format!(
+                    "\n\n<skill-instructions>\n{}\n</skill-instructions>",
+                    body.trim_end()
+                ));
+            }
+        }
+
+        Ok(result)
     }
 }
 
-// ── Single-shot entry point (used by `cooper prompt` and `cooper skills run`) ─
+// ── Single-shot entry point (used by `cooper prompt`) ────────────────────────
 
 pub async fn run(
     prompt: String,
     system_prompt: Option<String>,
+    active_skill: Option<String>,
     provider_name: Option<String>,
     model_name: Option<String>,
     config: &ResolvedConfig,
     registry: &ToolRegistry,
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<String> {
+    let empty_skills = SkillRegistry::empty();
     let mut session = Session::start(
         system_prompt,
+        active_skill,
         provider_name,
         model_name,
         config,
         registry,
+        &empty_skills,
         on_chunk,
     )
     .await?;
-    session.send(prompt, registry, on_chunk).await
+    session
+        .send(prompt, registry, &empty_skills, on_chunk)
+        .await
 }
