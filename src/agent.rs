@@ -3,7 +3,7 @@ use crate::providers::OutputChunk;
 use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use cooper_core::{Message, Role, SessionLogger};
+use cooper_core::{Message, Role, SessionLogger, Usage};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
@@ -30,6 +30,8 @@ enum SessionEntry {
         thinking: Option<String>,
         message: Message,
         duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
 }
 
@@ -75,7 +77,7 @@ impl SessionLogger for FileSessionLogger {
         }
     }
 
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message) {
+    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>) {
         let duration_ms = self
             .turn_start
             .take()
@@ -87,6 +89,7 @@ impl SessionLogger for FileSessionLogger {
                 thinking: thinking.map(str::to_string),
                 message: message.clone(),
                 duration_ms,
+                usage: usage.cloned(),
             },
         ) {
             eprintln!("warning: could not write session response: {}", e);

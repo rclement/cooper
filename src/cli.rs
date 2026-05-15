@@ -732,6 +732,21 @@ impl PhasePrinter {
                 );
                 let _ = out.flush();
             }
+            OutputChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    style(format!(
+                        "[{} in · {} out · {} total tokens]",
+                        prompt_tokens, completion_tokens, total_tokens
+                    ))
+                    .dim()
+                );
+            }
         }
     }
 

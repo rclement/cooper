@@ -46,13 +46,35 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 /// Struct variants produce `{"type":"content","text":"..."}` JSON — suitable for both
 /// the WASM JS callback and CLI pattern matching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputChunk {
-    Content { text: String },
-    Thinking { text: String },
-    ToolCall { name: String, args: String },
-    ToolResult { name: String, output: String },
+    Content {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
+    ToolCall {
+        name: String,
+        args: String,
+    },
+    ToolResult {
+        name: String,
+        output: String,
+    },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+    },
 }

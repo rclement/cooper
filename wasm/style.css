@@ -226,6 +226,13 @@ header {
   overflow-y: auto;
 }
 
+/* ── Token usage line ───────────────────────────────────────────────────────── */
+.usage-line {
+  color: var(--dim);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
 /* ── Error inline ───────────────────────────────────────────────────────────── */
 .error-inline {
   color: var(--red);

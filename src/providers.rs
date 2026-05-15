@@ -25,6 +25,11 @@ pub enum OutputChunk {
         name: String,
         output: String,
     },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+    },
 }
 
 impl From<cooper_core::OutputChunk> for OutputChunk {
@@ -38,6 +43,15 @@ impl From<cooper_core::OutputChunk> for OutputChunk {
             cooper_core::OutputChunk::ToolResult { name, output } => {
                 OutputChunk::ToolResult { name, output }
             }
+            cooper_core::OutputChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => OutputChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            },
         }
     }
 }

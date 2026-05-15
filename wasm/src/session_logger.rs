@@ -1,4 +1,4 @@
-use cooper_core::{Message, SessionLogger};
+use cooper_core::{Message, SessionLogger, Usage};
 use js_sys::Date;
 use serde::Serialize;
 use uuid::Uuid;
@@ -27,6 +27,8 @@ enum SessionEntry {
         thinking: Option<String>,
         message: Message,
         duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
         timestamp: f64,
     },
 }
@@ -129,7 +131,7 @@ impl SessionLogger for WasmSessionLogger {
         spawn_local(async move { write_entry(entry).await });
     }
 
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message) {
+    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>) {
         let duration_ms = self
             .turn_start_ms
             .map(|start| (Date::now() - start) as u64)
@@ -139,6 +141,7 @@ impl SessionLogger for WasmSessionLogger {
             thinking: thinking.map(str::to_string),
             message: message.clone(),
             duration_ms,
+            usage: usage.cloned(),
             timestamp: Date::now(),
         };
         spawn_local(async move { write_entry(entry).await });

@@ -1,4 +1,4 @@
-use crate::types::{Message, OutputChunk, Role, ToolCall};
+use crate::types::{Message, OutputChunk, Role, ToolCall, Usage};
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -49,17 +49,31 @@ fn message_to_wire(m: &Message) -> Value {
 // ── SSE stream types ──────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
 struct OaiRequest {
     model: String,
     messages: Vec<Value>,
     stream: bool,
+    stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Value>,
 }
 
 #[derive(Deserialize)]
+struct StreamUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+#[derive(Deserialize)]
 struct StreamChunk {
     choices: Vec<StreamChoice>,
+    usage: Option<StreamUsage>,
 }
 
 #[derive(Deserialize)]
@@ -246,7 +260,7 @@ pub async fn call(
     messages: Vec<Message>,
     tools: &[Value],
     on_chunk: &mut dyn FnMut(OutputChunk),
-) -> Result<Message> {
+) -> Result<(Message, Option<Usage>)> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let wire_messages: Vec<Value> = messages.iter().map(message_to_wire).collect();
 
@@ -257,6 +271,9 @@ pub async fn call(
             model: model.to_string(),
             messages: wire_messages,
             stream: true,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
             tools: tools.to_vec(),
         })
         .send()
@@ -273,6 +290,7 @@ pub async fn call(
     let mut inline_tool_started = false;
     let mut pending: std::collections::BTreeMap<usize, (String, String, String)> =
         Default::default();
+    let mut last_usage: Option<StreamUsage> = None;
 
     'stream: while let Some(bytes) = stream.next().await {
         let raw = bytes.map_err(|e| anyhow!("stream read error: {}", e))?;
@@ -294,6 +312,10 @@ pub async fn call(
                     Ok(c) => c,
                     Err(_) => continue,
                 };
+
+                if let Some(u) = chunk.usage {
+                    last_usage = Some(u);
+                }
 
                 let Some(choice) = chunk.choices.first() else {
                     continue;
@@ -376,6 +398,12 @@ pub async fn call(
         }
     }
 
+    let usage = last_usage.map(|u| Usage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+    });
+
     if !pending.is_empty() {
         let tool_calls: Vec<ToolCall> = pending
             .into_values()
@@ -385,22 +413,28 @@ pub async fn call(
                 arguments,
             })
             .collect();
-        return Ok(Message {
-            role: Role::Assistant,
-            content: clean_content,
-            tool_calls: Some(tool_calls),
-            tool_call_id: None,
-        });
+        return Ok((
+            Message {
+                role: Role::Assistant,
+                content: clean_content,
+                tool_calls: Some(tool_calls),
+                tool_call_id: None,
+            },
+            usage,
+        ));
     }
 
     if let Some(inline_calls) = parse_inline_tool_calls(&full_content) {
-        return Ok(Message {
-            role: Role::Assistant,
-            content: clean_content,
-            tool_calls: Some(inline_calls),
-            tool_call_id: None,
-        });
+        return Ok((
+            Message {
+                role: Role::Assistant,
+                content: clean_content,
+                tool_calls: Some(inline_calls),
+                tool_call_id: None,
+            },
+            usage,
+        ));
     }
 
-    Ok(Message::new(Role::Assistant, full_content))
+    Ok((Message::new(Role::Assistant, full_content), usage))
 }

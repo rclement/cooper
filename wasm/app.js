@@ -216,6 +216,16 @@ function startAssistantBubble() {
         break;
       }
 
+      case 'usage': {
+        contentNode = null;
+        const line = document.createElement('div');
+        line.className = 'usage-line';
+        line.textContent =
+          `${chunk.prompt_tokens} in · ${chunk.completion_tokens} out · ${chunk.total_tokens} total tokens`;
+        body.appendChild(line);
+        break;
+      }
+
       default:
         break;
     }

@@ -1,5 +1,5 @@
 use crate::provider;
-use crate::types::{Message, OutputChunk, Role};
+use crate::types::{Message, OutputChunk, Role, Usage};
 use anyhow::{Result, anyhow};
 
 #[allow(async_fn_in_trait)]
@@ -11,7 +11,7 @@ pub trait ToolExecutor {
 /// Per-turn hooks for session logging. Implement in the shell; pass `None` to skip.
 pub trait SessionLogger {
     fn on_request(&mut self, messages: &[Message]);
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message);
+    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>);
 }
 
 const MAX_TURNS: usize = 20;
@@ -43,7 +43,7 @@ pub async fn run_turn(
             on_chunk(chunk);
         };
 
-        let response = provider::call(
+        let (response, usage) = provider::call(
             base_url,
             api_key,
             model,
@@ -62,7 +62,16 @@ pub async fn run_turn(
                     Some(&thinking_buf)
                 },
                 &response,
+                usage.as_ref(),
             );
+        }
+
+        if let Some(ref u) = usage {
+            on_chunk(OutputChunk::Usage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+            });
         }
 
         if let Some(tool_calls) = response.tool_calls.clone() {
