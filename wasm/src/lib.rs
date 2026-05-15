@@ -35,15 +35,36 @@ impl CooperAgent {
             .and_then(|s| s.parse::<ApiType>().ok())
             .unwrap_or_default();
 
+        let system_prompt = cooper_core::system_prompt::build(cooper_core::system_prompt::Options {
+            base: cfg["system_prompt"]
+                .as_str()
+                .unwrap_or(cooper_core::system_prompt::DEFAULT)
+                .to_string(),
+            date: cfg["date"].as_str().map(str::to_string),
+            cwd: None,
+            skills: vec![],
+            agent_instructions: cfg["agent_instructions"].as_str().map(str::to_string),
+            context_files: cfg["context_files"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|f| {
+                            Some(cooper_core::system_prompt::ContextFile {
+                                path: f["path"].as_str()?.to_string(),
+                                content: f["content"].as_str()?.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
+
         Ok(CooperAgent {
             api_type,
             base_url: cfg["base_url"].as_str().unwrap_or("").to_string(),
             api_key: cfg["api_key"].as_str().unwrap_or("").to_string(),
             model: cfg["model"].as_str().unwrap_or("").to_string(),
-            system_prompt: cfg["system_prompt"]
-                .as_str()
-                .unwrap_or("You are a helpful AI assistant.")
-                .to_string(),
+            system_prompt,
         })
     }
 

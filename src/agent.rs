@@ -320,60 +320,59 @@ impl Session {
             active_skill,
         });
 
-        let mut system = system_prompt.unwrap_or_else(|| config.system_prompt.clone());
-
-        if !skill_registry.all().is_empty() {
-            let names: Vec<&str> = skill_registry
-                .all()
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect();
-            system.push_str(&format!(
-                "\n\nYou have access to skill modules ({}) via the `activate_skill` tool. \
-                Activate the most relevant skill at the start of any task that matches its domain.",
-                names.join(", ")
-            ));
-        }
-
-        if let Some((path, warn_if_missing)) = instructions_entry {
+        let agent_instructions = if let Some((path, warn_if_missing)) = instructions_entry {
             match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    system.push_str(&format!(
-                        "\n\n<agent-instructions>\n{}\n</agent-instructions>",
-                        content.trim_end()
-                    ));
-                }
+                Ok(content) => Some(content),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if warn_if_missing {
                         eprintln!("warning: agent instructions file not found: {}", path);
                     }
+                    None
                 }
-                Err(e) => eprintln!("warning: could not read agent instructions {}: {}", path, e),
+                Err(e) => {
+                    eprintln!("warning: could not read agent instructions {}: {}", path, e);
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
 
-        if !config.context.files.is_empty() {
-            let mut file_context = String::new();
-            for file_path in &config.context.files {
-                match std::fs::read_to_string(file_path) {
-                    Ok(content) => {
-                        file_context.push_str(&format!(
-                            "<file path=\"{}\">\n{}\n</file>\n",
-                            file_path, content
-                        ));
-                    }
-                    Err(e) => {
-                        eprintln!("warning: could not read context file {}: {}", file_path, e);
-                    }
+        let context_files = config
+            .context
+            .files
+            .iter()
+            .filter_map(|path| match std::fs::read_to_string(path) {
+                Ok(content) => Some(cooper_core::system_prompt::ContextFile {
+                    path: path.clone(),
+                    content,
+                }),
+                Err(e) => {
+                    eprintln!("warning: could not read context file {}: {}", path, e);
+                    None
                 }
-            }
-            if !file_context.is_empty() {
-                system.push_str(&format!("\n\n<context>\n{}</context>", file_context));
-            }
-        }
+            })
+            .collect();
+
+        let cwd = std::env::current_dir().context("getting current directory")?;
+
+        let system = cooper_core::system_prompt::build(cooper_core::system_prompt::Options {
+            base: system_prompt.unwrap_or_else(|| config.system_prompt.clone()),
+            date: Some(Utc::now().format("%Y-%m-%d").to_string()),
+            cwd: Some(cwd.display().to_string()),
+            skills: skill_registry
+                .all()
+                .iter()
+                .map(|s| cooper_core::system_prompt::SkillInfo {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                })
+                .collect(),
+            agent_instructions,
+            context_files,
+        });
 
         let session_id = Uuid::new_v4().to_string();
-        let cwd = std::env::current_dir().context("getting current directory")?;
         let path = session_file(&session_id)?;
         append(
             &path,

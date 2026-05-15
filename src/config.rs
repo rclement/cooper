@@ -161,7 +161,7 @@ pub fn load() -> Result<ResolvedConfig> {
     Ok(ResolvedConfig {
         system_prompt: merged
             .system_prompt
-            .unwrap_or_else(|| "You are a helpful AI assistant".to_string()),
+            .unwrap_or_else(|| cooper_core::system_prompt::DEFAULT.to_string()),
         providers: merged.providers.unwrap_or_default(),
         default_provider: merged.default_provider,
         default_model: merged.default_model,
