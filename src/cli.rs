@@ -464,6 +464,43 @@ async fn run_chat(
             break;
         }
 
+        if input == "/context" {
+            let prompt = session.system_prompt();
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            let _ = writeln!(out, "{}", style("─── system prompt ───").dim());
+            let _ = writeln!(out, "{}", prompt);
+            let _ = writeln!(out, "{}", style("─────────────────────").dim());
+            continue;
+        }
+
+        if let Some(skill_name) = input.strip_prefix("/skill:") {
+            let skill_name = skill_name.trim();
+            match skill_registry.find(skill_name) {
+                Some(skill) => {
+                    session.inject_skill(&skill.system_prompt);
+                    println!(
+                        "{}",
+                        style(format!("Skill '{}' activated.", skill_name)).dim()
+                    );
+                }
+                None => {
+                    eprintln!("skill '{}' not found", skill_name);
+                    let names: Vec<&str> = skill_registry
+                        .all()
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    if names.is_empty() {
+                        eprintln!("No skills are available.");
+                    } else {
+                        eprintln!("Available skills: {}", names.join(", "));
+                    }
+                }
+            }
+            continue;
+        }
+
         let mut printer = PhasePrinter::default();
         session
             .send(input, &tool_registry, &skill_registry, &mut |chunk| {

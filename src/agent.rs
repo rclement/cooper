@@ -390,6 +390,46 @@ impl Session {
         })
     }
 
+    /// Returns the current system prompt content.
+    pub fn system_prompt(&self) -> &str {
+        self.messages
+            .first()
+            .map(|m| m.content.as_str())
+            .unwrap_or("")
+    }
+
+    /// Inject or replace the skill block in the system prompt.
+    /// Replaces an existing `<skill-instructions>` block if present, otherwise appends one.
+    /// Passing an empty `body` removes an existing block without adding a new one.
+    pub fn inject_skill(&mut self, body: &str) {
+        let Some(sys) = self.messages.first_mut() else {
+            return;
+        };
+        const OPEN: &str = "\n\n<skill-instructions>\n";
+        const CLOSE: &str = "\n</skill-instructions>";
+        if let Some(start) = sys.content.find(OPEN) {
+            if let Some(rel) = sys.content[start + OPEN.len()..].find(CLOSE) {
+                let end = start + OPEN.len() + rel + CLOSE.len();
+                let new_block = if body.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}{}{}", OPEN, body.trim_end(), CLOSE)
+                };
+                sys.content = format!(
+                    "{}{}{}",
+                    &sys.content[..start],
+                    new_block,
+                    &sys.content[end..]
+                );
+                return;
+            }
+        }
+        if !body.is_empty() {
+            sys.content
+                .push_str(&format!("{}{}{}", OPEN, body.trim_end(), CLOSE));
+        }
+    }
+
     /// Send a user message and stream the response, keeping history for follow-up turns.
     /// If the model calls `activate_skill`, the skill body is injected into the system
     /// prompt so subsequent turns have it persistently.
