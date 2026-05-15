@@ -301,13 +301,22 @@ impl Session {
             .map(|s| s.name.clone())
             .collect();
 
+        // Mirror the tools Option semantics: None = no skill system active (nothing to show),
+        // Some(names) = skill system is in play (show names or "(none)" if filtered to empty).
+        let skills_display: Option<Vec<String>> =
+            if skill_names.is_empty() && config.context.allowed_skills.is_none() {
+                None
+            } else {
+                Some(skill_names)
+            };
+
         on_chunk(OutputChunk::SessionStart {
             provider: provider_key.clone(),
             model: model.clone(),
             agent_instructions: instructions_entry.map(|(p, _)| p.to_string()),
             context_files: config.context.files.clone(),
             tools: Some(resolved_tools),
-            skills: skill_names,
+            skills: skills_display,
             active_skill,
         });
 

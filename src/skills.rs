@@ -133,6 +133,18 @@ impl SkillRegistry {
         Ok(Self { skills })
     }
 
+    /// Like `load()` but retains only the skills named in `allowed`.
+    /// `None` means all skills are allowed; `Some(&[])` means none.
+    pub fn load_filtered(allowed: Option<&[String]>) -> Result<Self> {
+        let mut registry = Self::load()?;
+        if let Some(names) = allowed {
+            registry
+                .skills
+                .retain(|s| names.iter().any(|n| n == &s.name));
+        }
+        Ok(registry)
+    }
+
     pub fn empty() -> Self {
         Self { skills: vec![] }
     }

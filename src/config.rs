@@ -41,6 +41,9 @@ pub struct ContextConfig {
     pub files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// None = all skills allowed; Some([]) = no skills; Some([..]) = only listed skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_skills: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -118,6 +121,7 @@ fn merge_context(base: Option<ContextConfig>, over: Option<ContextConfig>) -> Co
             agent_instructions: o.agent_instructions.or(b.agent_instructions),
             files: if o.files.is_empty() { b.files } else { o.files },
             allowed_tools: o.allowed_tools.or(b.allowed_tools),
+            allowed_skills: o.allowed_skills.or(b.allowed_skills),
         },
     }
 }

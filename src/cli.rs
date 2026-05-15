@@ -175,7 +175,8 @@ pub async fn run() -> Result<()> {
             }
 
             let (resolved_system, active_skill) = if let Some(skill_name) = skill {
-                let skill_registry = SkillRegistry::load()?;
+                let skill_registry =
+                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
                 let skill = skill_registry
                     .find(&skill_name)
                     .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
@@ -257,8 +258,10 @@ pub async fn run() -> Result<()> {
 
         Command::Tools { subcommand } => match subcommand {
             ToolsCommand::List => {
+                let config = config::load()?;
                 let registry = ToolRegistry::load()?;
-                let skill_registry = SkillRegistry::load()?;
+                let skill_registry =
+                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
                 if let Some(schema) = agent::activate_skill_schema(&skill_registry) {
                     let f = &schema["function"];
                     let name = f["name"].as_str().unwrap_or("activate_skill");
@@ -329,7 +332,9 @@ pub async fn run() -> Result<()> {
 
         Command::Skills { subcommand } => match subcommand {
             SkillsCommand::List => {
-                let registry = SkillRegistry::load()?;
+                let config = config::load()?;
+                let registry =
+                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
                 if registry.all().is_empty() {
                     println!("No skills found.");
                     return Ok(());
@@ -388,6 +393,16 @@ pub async fn run() -> Result<()> {
                     }
                 }
             }
+            match &config.context.allowed_skills {
+                None => println!("context.allowed_skills: (all)"),
+                Some(skills) if skills.is_empty() => println!("context.allowed_skills: (none)"),
+                Some(skills) => {
+                    println!("context.allowed_skills:");
+                    for s in skills {
+                        println!("  - {}", s);
+                    }
+                }
+            }
             if config.providers.is_empty() {
                 println!("providers: (none)");
             } else {
@@ -430,7 +445,7 @@ async fn run_chat(
         config.context.agent_instructions = Some(AgentInstructions::File(file));
     }
     let tool_registry = ToolRegistry::load()?;
-    let skill_registry = SkillRegistry::load()?;
+    let skill_registry = SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
 
     let mut start_printer = PhasePrinter::default();
     let mut session = agent::Session::start(
@@ -717,10 +732,11 @@ impl PhasePrinter {
                     Some([]) => parts.push("tools: (none)".to_string()),
                     Some(names) => parts.push(format!("tools: {}", names.join(", "))),
                 }
-                if let Some(name) = active_skill {
-                    parts.push(format!("skill: {}", name));
-                } else if !skills.is_empty() {
-                    parts.push(format!("skills: {}", skills.join(", ")));
+                match (active_skill, skills.as_deref()) {
+                    (Some(name), _) => parts.push(format!("skill: {}", name)),
+                    (None, Some([])) => parts.push("skills: (none)".to_string()),
+                    (None, Some(names)) => parts.push(format!("skills: {}", names.join(", "))),
+                    (None, None) => {}
                 }
                 if !parts.is_empty() {
                     let _ = writeln!(out, "{}", style(parts.join("  ·  ")).dim());
