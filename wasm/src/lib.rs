@@ -1,8 +1,7 @@
 use cooper_core::{ApiType, OutputChunk};
 use wasm_bindgen::prelude::*;
 
-mod agent;
-mod session_logger;
+mod session;
 mod tools;
 
 #[wasm_bindgen(start)]
@@ -70,12 +69,7 @@ impl CooperAgent {
 
     /// Runs the agentic loop for `prompt`.
     ///
-    /// `on_chunk` is called with a JSON string for each output event:
-    ///   `{"type":"content","text":"..."}` — streamed assistant text
-    ///   `{"type":"thinking","text":"..."}` — reasoning/thinking tokens
-    ///   `{"type":"tool_call","name":"...","args":"..."}` — tool invocation
-    ///   `{"type":"tool_result","name":"...","output":"..."}` — tool output
-    ///
+    /// `on_chunk` is called with a JSON string for each output event.
     /// Returns a Promise that resolves to the final assistant text, or rejects
     /// with an error string.
     pub fn run_prompt(&self, prompt: String, on_chunk: js_sys::Function) -> js_sys::Promise {
@@ -86,23 +80,19 @@ impl CooperAgent {
         let system_prompt = self.system_prompt.clone();
 
         wasm_bindgen_futures::future_to_promise(async move {
+            let registry = tools::ToolRegistry::new();
+            let mut logger = session::WasmSessionLogger::new(&api_type.to_string(), &model);
+            let provider = cooper_core::AnyProvider::new(&api_type, base_url, api_key, model);
+
             let mut cb = |chunk: OutputChunk| {
                 let json = serde_json::to_string(&chunk).unwrap_or_default();
                 let _ = on_chunk.call1(&JsValue::UNDEFINED, &JsValue::from_str(&json));
             };
 
-            agent::run(
-                prompt,
-                system_prompt,
-                api_type,
-                base_url,
-                api_key,
-                model,
-                &mut cb,
-            )
-            .await
-            .map(|s| JsValue::from_str(&s))
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            cooper_core::agent::run(prompt, system_prompt, &provider, &registry, Some(&mut logger), &mut cb)
+                .await
+                .map(|s| JsValue::from_str(&s))
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         })
     }
 }

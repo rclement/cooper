@@ -1,102 +1,86 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use cooper_core::{Skill, SkillRegistry, parse_skill};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// ── Skill types ───────────────────────────────────────────────────────────────
+// ── LoadedSkills ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, Default)]
-struct SkillFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
+/// CLI-side registry: wraps the core `SkillRegistry` and tracks the bundle
+/// directory for skills loaded from a directory (the `skills/name/skill.md`
+/// convention). Flat-file skills have no bundle directory entry.
+pub struct LoadedSkills {
+    pub registry: SkillRegistry,
+    bundle_dirs: HashMap<String, PathBuf>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    /// The markdown body used as the skill's system prompt.
-    pub system_prompt: String,
-    pub source: PathBuf,
-}
-
-// ── Frontmatter parsing ───────────────────────────────────────────────────────
-
-/// Splits a markdown file into (frontmatter YAML, body).
-/// Returns ("", full_content) when no `---` delimiters are found.
-fn split_frontmatter(content: &str) -> (&str, &str) {
-    let content = content.trim_start_matches('\n');
-    if !content.starts_with("---") {
-        return ("", content);
+impl LoadedSkills {
+    pub(crate) fn from_pairs(pairs: Vec<(Skill, Option<PathBuf>)>) -> Self {
+        let mut bundle_dirs = HashMap::new();
+        let skills = pairs
+            .into_iter()
+            .map(|(skill, dir)| {
+                if let Some(d) = dir {
+                    bundle_dirs.insert(skill.name.clone(), d);
+                }
+                skill
+            })
+            .collect();
+        Self { registry: SkillRegistry::new(skills), bundle_dirs }
     }
-    let after_open = &content[3..];
-    // Allow `---` or `---\n`; find the closing delimiter.
-    let rest = after_open.trim_start_matches('\n');
-    if let Some(close) = rest.find("\n---") {
-        let fm = &rest[..close];
-        let body = &rest[close + 4..]; // skip "\n---"
-        let body = body.trim_start_matches('\n');
-        (fm, body)
-    } else {
-        ("", content)
+
+    pub fn empty() -> Self {
+        Self { registry: SkillRegistry::empty(), bundle_dirs: HashMap::new() }
+    }
+
+    /// Returns the bundle directory for a bundled skill, or `None` for flat-file skills.
+    pub fn bundle_dir(&self, name: &str) -> Option<&Path> {
+        self.bundle_dirs.get(name).map(PathBuf::as_path)
     }
 }
 
-// ── Loading ───────────────────────────────────────────────────────────────────
+impl std::ops::Deref for LoadedSkills {
+    type Target = SkillRegistry;
+    fn deref(&self) -> &SkillRegistry {
+        &self.registry
+    }
+}
+
+// ── File I/O ──────────────────────────────────────────────────────────────────
 
 fn load_skill_from_file(path: &Path) -> Result<Skill> {
     let content =
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let (fm_str, body) = split_frontmatter(&content);
-
-    let fm: SkillFrontmatter = if fm_str.is_empty() {
-        SkillFrontmatter::default()
-    } else {
-        serde_yaml::from_str(fm_str)
-            .with_context(|| format!("parsing frontmatter in {}", path.display()))?
-    };
-
-    // Fall back to the stem of the filename when `name` is absent.
-    let name = fm.name.unwrap_or_else(|| {
-        path.file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    });
-
-    let description = fm.description.unwrap_or_default();
-
-    Ok(Skill {
-        name,
-        description,
-        system_prompt: body.to_string(),
-        source: path.to_path_buf(),
-    })
+    let name_hint = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    parse_skill(&content, &name_hint)
+        .with_context(|| format!("parsing skill at {}", path.display()))
 }
 
-/// Test-only re-export of the private `load_from_dir` helper.
-#[cfg(test)]
-pub(crate) fn load_from_dir_pub(dir: &Path) -> Result<Vec<Skill>> {
-    load_from_dir(dir)
-}
-
-fn load_from_dir(dir: &Path) -> Result<Vec<Skill>> {
-    let mut skills = Vec::new();
+/// Returns `(skill, bundle_dir)` pairs. `bundle_dir` is `Some` only for skills
+/// loaded from a `name/skill.md` directory structure.
+fn load_from_dir(dir: &Path) -> Result<Vec<(Skill, Option<PathBuf>)>> {
+    let mut pairs = Vec::new();
 
     let mut entries: Vec<_> = match fs::read_dir(dir) {
         Ok(iter) => iter.filter_map(|e| e.ok()).collect(),
-        Err(_) => return Ok(skills),
+        Err(_) => return Ok(pairs),
     };
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
         let path = entry.path();
-        let skill_path = if path.is_file() && path.extension().map_or(false, |e| e == "md") {
-            path.clone()
+        let (skill_path, bundle_dir) = if path.is_file()
+            && path.extension().map_or(false, |e| e == "md")
+        {
+            (path.clone(), None)
         } else if path.is_dir() {
             let candidate = path.join("skill.md");
             if candidate.exists() {
-                candidate
+                (candidate, Some(path.clone()))
             } else {
                 continue;
             }
@@ -105,63 +89,56 @@ fn load_from_dir(dir: &Path) -> Result<Vec<Skill>> {
         };
 
         match load_skill_from_file(&skill_path) {
-            Ok(skill) => skills.push(skill),
+            Ok(skill) => pairs.push((skill, bundle_dir)),
             Err(e) => eprintln!("warning: skipping invalid skill definition: {}", e),
         }
     }
 
-    Ok(skills)
+    Ok(pairs)
 }
 
-// ── Registry ──────────────────────────────────────────────────────────────────
+// ── Public loaders ────────────────────────────────────────────────────────────
 
-pub struct SkillRegistry {
-    pub(crate) skills: Vec<Skill>,
-}
-
-impl SkillRegistry {
-    /// Loads skills from global (~/.cooper/skills) and project (.agents/skills) directories.
+impl LoadedSkills {
+    /// Loads skills from global (`~/.cooper/skills`) and project (`.agents/skills`) directories.
     /// Project skills override globals of the same name.
     pub fn load() -> Result<Self> {
-        let mut skills: Vec<Skill> = Vec::new();
+        let mut pairs: Vec<(Skill, Option<PathBuf>)> = Vec::new();
 
         if let Some(home) = dirs::home_dir() {
-            let global_dir = home.join(".cooper").join("skills");
-            skills.extend(load_from_dir(&global_dir)?);
+            pairs.extend(load_from_dir(&home.join(".cooper").join("skills"))?);
         }
 
-        let project_dir = PathBuf::from(".agents/skills");
-        for skill in load_from_dir(&project_dir)? {
-            skills.retain(|s| s.name != skill.name);
-            skills.push(skill);
+        for (skill, dir) in load_from_dir(&PathBuf::from(".agents/skills"))? {
+            pairs.retain(|(s, _)| s.name != skill.name);
+            pairs.push((skill, dir));
         }
 
-        Ok(Self { skills })
+        Ok(Self::from_pairs(pairs))
     }
 
     /// Like `load()` but retains only the skills named in `allowed`.
-    /// `None` means all skills are allowed; `Some(&[])` means none.
+    /// `None` means all skills are kept; `Some(&[])` means none.
     pub fn load_filtered(allowed: Option<&[String]>) -> Result<Self> {
-        let mut registry = Self::load()?;
+        let mut loaded = Self::load()?;
         if let Some(names) = allowed {
-            registry
-                .skills
-                .retain(|s| names.iter().any(|n| n == &s.name));
+            loaded.registry = SkillRegistry::new(
+                loaded.registry.all().iter()
+                    .filter(|s| names.iter().any(|n| n == &s.name))
+                    .cloned()
+                    .collect(),
+            );
+            loaded.bundle_dirs.retain(|k, _| names.iter().any(|n| n == k));
         }
-        Ok(registry)
+        Ok(loaded)
     }
+}
 
-    pub fn empty() -> Self {
-        Self { skills: vec![] }
-    }
+// ── Test helper ───────────────────────────────────────────────────────────────
 
-    pub fn all(&self) -> &[Skill] {
-        &self.skills
-    }
-
-    pub fn find(&self, name: &str) -> Option<&Skill> {
-        self.skills.iter().find(|s| s.name == name)
-    }
+#[cfg(test)]
+pub(crate) fn load_from_dir_pub(dir: &Path) -> Result<LoadedSkills> {
+    Ok(LoadedSkills::from_pairs(load_from_dir(dir)?))
 }
 
 #[cfg(test)]
@@ -169,41 +146,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn write_skill(dir: &std::path::Path, filename: &str, content: &str) {
+    fn write_skill(dir: &Path, filename: &str, content: &str) {
         std::fs::write(dir.join(filename), content).unwrap();
-    }
-
-    // ── split_frontmatter ─────────────────────────────────────────────────────
-
-    #[test]
-    fn split_no_frontmatter() {
-        let (fm, body) = split_frontmatter("just body");
-        assert_eq!(fm, "");
-        assert_eq!(body, "just body");
-    }
-
-    #[test]
-    fn split_with_frontmatter() {
-        let content = "---\nname: my-skill\n---\nbody content";
-        let (fm, body) = split_frontmatter(content);
-        assert!(fm.contains("name: my-skill"));
-        assert_eq!(body, "body content");
-    }
-
-    #[test]
-    fn split_leading_newlines_stripped() {
-        let content = "\n---\nname: x\n---\nbody";
-        let (fm, body) = split_frontmatter(content);
-        assert!(fm.contains("name: x"));
-        assert_eq!(body, "body");
-    }
-
-    #[test]
-    fn split_no_closing_delimiter_returns_empty_fm() {
-        // Has opening --- but no closing ---
-        let content = "---\nname: x\nbody";
-        let (fm, _body) = split_frontmatter(content);
-        assert_eq!(fm, "");
     }
 
     // ── load_skill_from_file ──────────────────────────────────────────────────
@@ -230,8 +174,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_errors() {
-        let result = load_skill_from_file(std::path::Path::new("/nonexistent/skill.md"));
-        assert!(result.is_err());
+        assert!(load_skill_from_file(Path::new("/nonexistent/skill.md")).is_err());
     }
 
     // ── load_from_dir ─────────────────────────────────────────────────────────
@@ -239,14 +182,12 @@ mod tests {
     #[test]
     fn load_from_dir_empty_returns_empty() {
         let tmp = TempDir::new().unwrap();
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_from_dir(tmp.path()).unwrap().is_empty());
     }
 
     #[test]
     fn load_from_dir_nonexistent_returns_empty() {
-        let skills = load_from_dir(std::path::Path::new("/nonexistent/skills")).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_from_dir(Path::new("/nonexistent/skills")).unwrap().is_empty());
     }
 
     #[test]
@@ -254,31 +195,32 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "a.md", "---\nname: alpha\n---\nAlpha skill");
         write_skill(tmp.path(), "b.md", "Beta skill");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert_eq!(skills.len(), 2);
-        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        let pairs = load_from_dir(tmp.path()).unwrap();
+        assert_eq!(pairs.len(), 2);
+        let names: Vec<_> = pairs.iter().map(|(s, _)| s.name.as_str()).collect();
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"b"));
+        // flat files have no bundle dir
+        assert!(pairs.iter().all(|(_, d)| d.is_none()));
     }
 
     #[test]
-    fn load_from_dir_bundled_directory_skill() {
+    fn load_from_dir_bundled_skill_has_dir() {
         let tmp = TempDir::new().unwrap();
         let skill_dir = tmp.path().join("my-skill");
         std::fs::create_dir(&skill_dir).unwrap();
         write_skill(&skill_dir, "skill.md", "---\nname: bundled\n---\nBundled skill body");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "bundled");
+        let pairs = load_from_dir(tmp.path()).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0.name, "bundled");
+        assert_eq!(pairs[0].1.as_deref(), Some(skill_dir.as_path()));
     }
 
     #[test]
     fn load_from_dir_ignores_non_md_files() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("README.txt"), "not a skill").unwrap();
-        std::fs::write(tmp.path().join("config.yml"), "not a skill").unwrap();
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_from_dir(tmp.path()).unwrap().is_empty());
     }
 
     #[test]
@@ -287,103 +229,45 @@ mod tests {
         let sub = tmp.path().join("no-skill-md");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("other.md"), "not a skill").unwrap();
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_from_dir(tmp.path()).unwrap().is_empty());
     }
 
-    // ── SkillRegistry ─────────────────────────────────────────────────────────
+    // ── LoadedSkills ──────────────────────────────────────────────────────────
 
     #[test]
-    fn registry_empty() {
-        let reg = SkillRegistry::empty();
-        assert!(reg.all().is_empty());
-        assert!(reg.find("anything").is_none());
+    fn loaded_skills_empty() {
+        let ls = LoadedSkills::empty();
+        assert!(ls.all().is_empty());
+        assert!(ls.find("anything").is_none());
+        assert!(ls.bundle_dir("anything").is_none());
     }
 
     #[test]
-    fn registry_find() {
+    fn loaded_skills_bundle_dir_tracked() {
         let tmp = TempDir::new().unwrap();
-        write_skill(tmp.path(), "foo.md", "---\nname: foo\n---\nFoo body");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        let reg = SkillRegistry { skills };
-        assert!(reg.find("foo").is_some());
-        assert!(reg.find("bar").is_none());
+        let skill_dir = tmp.path().join("my-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        write_skill(&skill_dir, "skill.md", "---\nname: my-skill\n---\nContent");
+        write_skill(tmp.path(), "flat.md", "Flat skill");
+        let pairs = load_from_dir(tmp.path()).unwrap();
+        let ls = LoadedSkills::from_pairs(pairs);
+        assert!(ls.bundle_dir("my-skill").is_some());
+        assert!(ls.bundle_dir("flat").is_none());
     }
 
     #[test]
-    fn registry_load_filtered_none_keeps_all() {
+    fn load_from_dir_skips_invalid_frontmatter_with_warning() {
         let tmp = TempDir::new().unwrap();
-        write_skill(tmp.path(), "a.md", "A");
-        write_skill(tmp.path(), "b.md", "B");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        let mut reg = SkillRegistry { skills };
-        // Simulate load_filtered(None) — no filtering
-        // We test the retain logic directly
-        let allowed: Option<&[String]> = None;
-        if let Some(names) = allowed {
-            reg.skills.retain(|s| names.iter().any(|n| n == &s.name));
-        }
-        assert_eq!(reg.all().len(), 2);
+        write_skill(tmp.path(), "bad.md", "---\n- list item\n---\nbody");
+        assert!(load_from_dir(tmp.path()).unwrap().is_empty());
     }
 
-    #[test]
-    fn registry_load_filtered_empty_keeps_none() {
-        let tmp = TempDir::new().unwrap();
-        write_skill(tmp.path(), "a.md", "A");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        let mut reg = SkillRegistry { skills };
-        let allowed: Vec<String> = vec![];
-        reg.skills.retain(|s| allowed.iter().any(|n| n == &s.name));
-        assert!(reg.all().is_empty());
-    }
-
-    #[test]
-    fn registry_load_filtered_specific_names() {
-        let tmp = TempDir::new().unwrap();
-        write_skill(tmp.path(), "a.md", "A");
-        write_skill(tmp.path(), "b.md", "B");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        let mut reg = SkillRegistry { skills };
-        let allowed = vec!["a".to_string()];
-        reg.skills.retain(|s| allowed.iter().any(|n| n == &s.name));
-        assert_eq!(reg.all().len(), 1);
-        assert_eq!(reg.all()[0].name, "a");
-    }
-
-    #[test]
-    fn registry_project_overrides_global() {
-        // Test the retain-then-push override logic from load()
-        let skill_a = Skill {
-            name: "coding".into(),
-            description: "global version".into(),
-            system_prompt: "global".into(),
-            source: std::path::PathBuf::from("global/coding.md"),
-        };
-        let skill_b = Skill {
-            name: "coding".into(),
-            description: "project version".into(),
-            system_prompt: "project".into(),
-            source: std::path::PathBuf::from("project/coding.md"),
-        };
-        let mut skills = vec![skill_a];
-        // Simulate project override
-        skills.retain(|s| s.name != skill_b.name);
-        skills.push(skill_b);
-        let reg = SkillRegistry { skills };
-        assert_eq!(reg.find("coding").unwrap().description, "project version");
-        assert_eq!(reg.all().len(), 1);
-    }
-
-    // ── SkillRegistry::load() ─────────────────────────────────────────────────
+    // ── LoadedSkills::load / load_filtered ────────────────────────────────────
 
     use std::sync::Mutex;
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    struct TempHome {
-        _dir: TempDir,
-        orig: Option<String>,
-    }
-
+    struct TempHome { _dir: TempDir, orig: Option<String> }
     impl TempHome {
         fn new() -> Self {
             let dir = TempDir::new().unwrap();
@@ -392,7 +276,6 @@ mod tests {
             Self { _dir: dir, orig }
         }
     }
-
     impl Drop for TempHome {
         fn drop(&mut self) {
             unsafe {
@@ -405,110 +288,78 @@ mod tests {
     }
 
     #[test]
-    fn skill_registry_load_no_dirs_returns_empty() {
+    fn load_no_dirs_returns_empty() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
-        let reg = SkillRegistry::load().unwrap();
-        assert!(reg.all().is_empty());
-
+        assert!(LoadedSkills::load().unwrap().all().is_empty());
         std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
-    fn skill_registry_load_reads_global_skills() {
+    fn load_reads_global_skills() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
         let global_dir = _home._dir.path().join(".cooper").join("skills");
         std::fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "global.md", "---\nname: global\n---\nGlobal skill");
-
-        let reg = SkillRegistry::load().unwrap();
-        assert!(reg.find("global").is_some());
-
+        assert!(LoadedSkills::load().unwrap().find("global").is_some());
         std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
-    fn skill_registry_load_project_overrides_global_skill() {
+    fn load_project_overrides_global_skill() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
         let global_dir = _home._dir.path().join(".cooper").join("skills");
         std::fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "tool.md", "---\nname: tool\n---\nGlobal tool skill");
-
         let project_dir = tmp_cwd.path().join(".agents").join("skills");
         std::fs::create_dir_all(&project_dir).unwrap();
         write_skill(&project_dir, "tool.md", "---\nname: tool\n---\nProject tool skill");
-
-        let reg = SkillRegistry::load().unwrap();
-        assert_eq!(reg.all().len(), 1);
-        assert!(reg.find("tool").unwrap().system_prompt.contains("Project tool skill"));
-
+        let ls = LoadedSkills::load().unwrap();
+        assert_eq!(ls.all().len(), 1);
+        assert!(ls.find("tool").unwrap().system_prompt.contains("Project tool skill"));
         std::env::set_current_dir(prev).unwrap();
     }
 
-    // ── SkillRegistry::load_filtered() ───────────────────────────────────────
-
     #[test]
-    fn skill_registry_load_filtered_by_name() {
+    fn load_filtered_by_name() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
         let global_dir = _home._dir.path().join(".cooper").join("skills");
         std::fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "a.md", "A skill");
         write_skill(&global_dir, "b.md", "B skill");
-
-        let allowed = vec!["a".to_string()];
-        let reg = SkillRegistry::load_filtered(Some(&allowed)).unwrap();
-        assert_eq!(reg.all().len(), 1);
-        assert_eq!(reg.all()[0].name, "a");
-
+        let ls = LoadedSkills::load_filtered(Some(&["a".to_string()])).unwrap();
+        assert_eq!(ls.all().len(), 1);
+        assert_eq!(ls.all()[0].name, "a");
         std::env::set_current_dir(prev).unwrap();
     }
 
     #[test]
-    fn skill_registry_load_filtered_none_keeps_all() {
+    fn load_filtered_none_keeps_all() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
         let global_dir = _home._dir.path().join(".cooper").join("skills");
         std::fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "a.md", "A skill");
         write_skill(&global_dir, "b.md", "B skill");
-
-        let reg = SkillRegistry::load_filtered(None).unwrap();
-        assert_eq!(reg.all().len(), 2);
-
+        assert_eq!(LoadedSkills::load_filtered(None).unwrap().all().len(), 2);
         std::env::set_current_dir(prev).unwrap();
-    }
-
-    // ── load_from_dir skips invalid frontmatter ───────────────────────────────
-
-    #[test]
-    fn load_from_dir_skips_invalid_frontmatter_with_warning() {
-        let tmp = TempDir::new().unwrap();
-        // YAML sequence as frontmatter — cannot be deserialized into SkillFrontmatter struct
-        write_skill(tmp.path(), "bad.md", "---\n- list item\n---\nbody");
-        let skills = load_from_dir(tmp.path()).unwrap();
-        assert!(skills.is_empty());
     }
 }

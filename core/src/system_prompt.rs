@@ -6,16 +6,11 @@ pub struct ContextFile {
     pub content: String,
 }
 
-pub struct SkillInfo {
-    pub name: String,
-    pub description: String,
-}
-
 pub struct Options {
     pub base: String,
     pub date: Option<String>,
     pub cwd: Option<String>,
-    pub skills: Vec<SkillInfo>,
+    pub skills: Vec<crate::skill::Skill>,
     pub agent_instructions: Option<String>,
     pub context_files: Vec<ContextFile>,
 }
@@ -24,7 +19,7 @@ pub fn build(opts: Options) -> String {
     let mut system = opts.base;
 
     if !opts.skills.is_empty() {
-        let names: Vec<&str> = opts.skills.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = opts.skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
         system.push_str(&format!(
             "\n\nYou have access to skill modules ({}) via the `activate_skill` tool. \
             Activate the most relevant skill at the start of any task that matches its domain.",
@@ -86,7 +81,7 @@ mod tests {
     fn build_with_skills() {
         let mut opts = base_opts();
         opts.skills = vec![
-            SkillInfo { name: "coding".into(), description: "writes code".into() },
+            crate::skill::Skill { name: "coding".into(), description: "writes code".into(), system_prompt: String::new() },
         ];
         let result = build(opts);
         assert!(result.contains("activate_skill"));
@@ -154,7 +149,7 @@ mod tests {
     #[test]
     fn build_skill_with_empty_description() {
         let mut opts = base_opts();
-        opts.skills = vec![SkillInfo { name: "bare".into(), description: "".into() }];
+        opts.skills = vec![crate::skill::Skill { name: "bare".into(), description: "".into(), system_prompt: String::new() }];
         let result = build(opts);
         // skill name still appears in the list
         assert!(result.contains("bare"));

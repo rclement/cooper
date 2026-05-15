@@ -112,7 +112,7 @@ pub fn find(name: &str) -> Option<&'static Tool> {
     BUILTIN_TOOLS.iter().find(|t| t.name == name)
 }
 
-pub fn oai_schema(tool: &Tool) -> Value {
+pub fn tool_schema(tool: &Tool) -> cooper_core::ToolSchema {
     let mut properties = serde_json::Map::new();
     let mut required_params: Vec<Value> = Vec::new();
     for p in tool.params {
@@ -124,18 +124,15 @@ pub fn oai_schema(tool: &Tool) -> Value {
             required_params.push(serde_json::json!(p.name));
         }
     }
-    serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": {
-                "type": "object",
-                "properties": Value::Object(properties),
-                "required": required_params,
-            }
-        }
-    })
+    cooper_core::ToolSchema {
+        name: tool.name.to_string(),
+        description: tool.description.to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": Value::Object(properties),
+            "required": required_params,
+        }),
+    }
 }
 
 pub fn execute(tool: &Tool, args: &HashMap<String, String>) -> Result<String> {
@@ -252,7 +249,7 @@ pub struct CustomTool {
 }
 
 impl CustomTool {
-    fn oai_schema(&self) -> Value {
+    fn tool_schema(&self) -> cooper_core::ToolSchema {
         let mut properties = serde_json::Map::new();
         let mut required_params: Vec<Value> = Vec::new();
         for (name, p) in &self.def.parameters {
@@ -265,18 +262,15 @@ impl CustomTool {
                 required_params.push(Value::String(name.clone()));
             }
         }
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": self.def.name,
-                "description": self.def.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": Value::Object(properties),
-                    "required": required_params,
-                }
-            }
-        })
+        cooper_core::ToolSchema {
+            name: self.def.name.clone(),
+            description: self.def.description.clone(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": Value::Object(properties),
+                "required": required_params,
+            }),
+        }
     }
 
     pub async fn execute(&self, args: &HashMap<String, String>) -> Result<String> {
@@ -513,9 +507,9 @@ impl ToolRegistry {
         names
     }
 
-    pub fn all_oai_schemas(&self) -> Vec<Value> {
-        let mut schemas: Vec<Value> = BUILTIN_TOOLS.iter().map(oai_schema).collect();
-        schemas.extend(self.custom_tools.iter().map(|t| t.oai_schema()));
+    pub fn schemas(&self) -> Vec<cooper_core::ToolSchema> {
+        let mut schemas: Vec<cooper_core::ToolSchema> = BUILTIN_TOOLS.iter().map(tool_schema).collect();
+        schemas.extend(self.custom_tools.iter().map(|t| t.tool_schema()));
         schemas
     }
 
@@ -618,26 +612,26 @@ mod tests {
         assert_eq!(result, "${abc");
     }
 
-    // ── oai_schema ────────────────────────────────────────────────────────────
+    // ── tool_schema ───────────────────────────────────────────────────────────
 
     #[test]
-    fn oai_schema_builtin_read_file() {
+    fn tool_schema_builtin_read_file() {
         let tool = find("read_file").unwrap();
-        let schema = oai_schema(tool);
-        assert_eq!(schema["function"]["name"], "read_file");
-        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        let schema = tool_schema(tool);
+        assert_eq!(schema.name, "read_file");
+        let required = schema.parameters["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "path"));
     }
 
     #[test]
-    fn oai_schema_optional_param_not_in_required() {
+    fn tool_schema_optional_param_not_in_required() {
         let tool = find("list_files").unwrap();
-        let schema = oai_schema(tool);
+        let schema = tool_schema(tool);
         // path has a default, so it's optional
-        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        let required = schema.parameters["required"].as_array().unwrap();
         assert!(!required.iter().any(|r| r == "path"));
         // but it still appears in properties
-        let props = schema["function"]["parameters"]["properties"].as_object().unwrap();
+        let props = schema.parameters["properties"].as_object().unwrap();
         assert!(props.contains_key("path"));
     }
 
@@ -1045,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_tool_oai_schema() {
+    fn custom_tool_tool_schema() {
         let mut params = IndexMap::new();
         params.insert("query".to_string(), CustomToolParamDef {
             param_type: "string".into(),
@@ -1063,11 +1057,11 @@ mod tests {
             },
             source: std::path::PathBuf::from("test.yml"),
         };
-        let schema = tool.oai_schema();
-        assert_eq!(schema["function"]["name"], "search");
-        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        let schema = tool.tool_schema();
+        assert_eq!(schema.name, "search");
+        let required = schema.parameters["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "query"));
-        assert_eq!(schema["function"]["parameters"]["properties"]["query"]["description"], "search query");
+        assert_eq!(schema.parameters["properties"]["query"]["description"], "search query");
     }
 
     // ── ToolRegistry::custom_tools() accessor ─────────────────────────────────
@@ -1185,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_all_oai_schemas_includes_custom() {
+    fn registry_schemas_includes_custom() {
         let tool = CustomTool {
             def: CustomToolDef {
                 name: "custom_schema".into(),
@@ -1197,10 +1191,10 @@ mod tests {
             source: std::path::PathBuf::from("test.yml"),
         };
         let reg = ToolRegistry { custom_tools: vec![tool] };
-        let schemas = reg.all_oai_schemas();
+        let schemas = reg.schemas();
         assert_eq!(schemas.len(), BUILTIN_TOOLS.len() + 1);
         let custom = schemas.last().unwrap();
-        assert_eq!(custom["function"]["name"], "custom_schema");
+        assert_eq!(custom.name, "custom_schema");
     }
 
     #[tokio::test]
@@ -1309,8 +1303,8 @@ mod tests {
 }
 
 impl cooper_core::ToolExecutor for ToolRegistry {
-    fn schemas(&self) -> Vec<serde_json::Value> {
-        self.all_oai_schemas()
+    fn schemas(&self) -> Vec<cooper_core::ToolSchema> {
+        self.schemas()
     }
 
     async fn execute(&self, name: &str, args_json: &str) -> anyhow::Result<String> {

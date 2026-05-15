@@ -13,7 +13,7 @@ impl ToolRegistry {
 }
 
 impl cooper_core::ToolExecutor for ToolRegistry {
-    fn schemas(&self) -> Vec<serde_json::Value> {
+    fn schemas(&self) -> Vec<cooper_core::ToolSchema> {
         vec![]
     }
 

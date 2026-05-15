@@ -88,11 +88,39 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Provider-agnostic tool schema. Each provider translates this into its own
+/// wire format internally — no OAI-specific JSON leaks into core.
+#[derive(Debug, Clone)]
+pub struct ToolSchema {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema object describing the tool's parameters.
+    pub parameters: serde_json::Value,
+}
+
 /// Struct variants produce `{"type":"content","text":"..."}` JSON — suitable for both
 /// the WASM JS callback and CLI pattern matching.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputChunk {
+    /// Emitted once at the start of a session with the resolved configuration.
+    SessionStart {
+        provider: String,
+        model: String,
+        /// `None` = disabled; `Some(path)` = file that will be loaded
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_instructions: Option<String>,
+        context_files: Vec<String>,
+        /// `None` = all tools; `Some(list)` = restricted set
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<String>>,
+        /// `None` = skill system inactive; `Some(list)` = active (may be empty if all filtered out)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skills: Option<Vec<String>>,
+        /// Name of the skill pre-loaded into the system prompt (`--skill` flag)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_skill: Option<String>,
+    },
     Content {
         text: String,
     },
@@ -111,6 +139,31 @@ pub enum OutputChunk {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+    },
+}
+
+/// Canonical session lifecycle events. Storage backends receive these via `SessionLogger::on_event`
+/// and may enrich them with backend-specific metadata (e.g. `session_id`, `timestamp`) when persisting.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionEvent {
+    SessionStart {
+        id: String,
+        provider: String,
+        model: String,
+        project: String,
+        started_at: String,
+    },
+    Request {
+        messages: Vec<Message>,
+    },
+    Response {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
+        message: Message,
+        duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
 }
 

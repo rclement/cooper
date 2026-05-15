@@ -1,5 +1,5 @@
 use super::{ThinkParser, parse_inline_tool_calls};
-use crate::types::{Message, OutputChunk, Role, ToolCall, Usage};
+use crate::types::{Message, OutputChunk, Role, ToolCall, ToolSchema, Usage};
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -105,6 +105,17 @@ struct PartialFunctionDelta {
     arguments: Option<String>,
 }
 
+fn tool_schema_to_oai(schema: &ToolSchema) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": schema.name,
+            "description": schema.description,
+            "parameters": schema.parameters,
+        }
+    })
+}
+
 // ── Streaming call ────────────────────────────────────────────────────────────
 
 pub async fn call(
@@ -112,11 +123,12 @@ pub async fn call(
     api_key: &str,
     model: &str,
     messages: Vec<Message>,
-    tools: &[Value],
+    tools: &[ToolSchema],
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<(Message, Option<Usage>)> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let wire_messages: Vec<Value> = messages.iter().map(message_to_wire).collect();
+    let tools_wire: Vec<Value> = tools.iter().map(tool_schema_to_oai).collect();
 
     let mut stream = Client::new()
         .post(&url)
@@ -128,7 +140,7 @@ pub async fn call(
             stream_options: StreamOptions {
                 include_usage: true,
             },
-            tools: tools.to_vec(),
+            tools: tools_wire,
         })
         .send()
         .await

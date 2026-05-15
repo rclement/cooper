@@ -1,9 +1,8 @@
 pub mod anthropic_messages;
 pub mod openai_completions;
 
-use crate::types::{ApiType, Message, OutputChunk, ToolCall};
+use crate::types::{ApiType, Message, OutputChunk, ToolCall, ToolSchema, Usage};
 use anyhow::Result;
-use serde_json::Value;
 
 // ── ThinkParser ───────────────────────────────────────────────────────────────
 
@@ -342,23 +341,80 @@ mod tests {
     }
 }
 
-// ── Dispatcher ────────────────────────────────────────────────────────────────
+// ── Provider trait ────────────────────────────────────────────────────────────
 
-pub async fn call(
-    api_type: &ApiType,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    messages: Vec<Message>,
-    tools: &[Value],
-    on_chunk: &mut dyn FnMut(OutputChunk),
-) -> Result<(Message, Option<crate::types::Usage>)> {
-    match api_type {
-        ApiType::OpenaiCompletions => {
-            openai_completions::call(base_url, api_key, model, messages, tools, on_chunk).await
+#[allow(async_fn_in_trait)]
+pub trait Provider {
+    async fn call(
+        &self,
+        messages: Vec<Message>,
+        tools: &[ToolSchema],
+        on_chunk: &mut dyn FnMut(OutputChunk),
+    ) -> Result<(Message, Option<Usage>)>;
+}
+
+// ── Concrete providers ────────────────────────────────────────────────────────
+
+pub struct OpenaiCompletionsProvider {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Provider for OpenaiCompletionsProvider {
+    async fn call(
+        &self,
+        messages: Vec<Message>,
+        tools: &[ToolSchema],
+        on_chunk: &mut dyn FnMut(OutputChunk),
+    ) -> Result<(Message, Option<Usage>)> {
+        openai_completions::call(&self.base_url, &self.api_key, &self.model, messages, tools, on_chunk).await
+    }
+}
+
+pub struct AnthropicMessagesProvider {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Provider for AnthropicMessagesProvider {
+    async fn call(
+        &self,
+        messages: Vec<Message>,
+        tools: &[ToolSchema],
+        on_chunk: &mut dyn FnMut(OutputChunk),
+    ) -> Result<(Message, Option<Usage>)> {
+        anthropic_messages::call(&self.base_url, &self.api_key, &self.model, messages, tools, on_chunk).await
+    }
+}
+
+// ── AnyProvider for runtime dispatch ─────────────────────────────────────────
+
+pub enum AnyProvider {
+    Openai(OpenaiCompletionsProvider),
+    Anthropic(AnthropicMessagesProvider),
+}
+
+impl AnyProvider {
+    pub fn new(api_type: &ApiType, base_url: String, api_key: String, model: String) -> Self {
+        match api_type {
+            ApiType::OpenaiCompletions => Self::Openai(OpenaiCompletionsProvider { base_url, api_key, model }),
+            ApiType::AnthropicMessages => Self::Anthropic(AnthropicMessagesProvider { base_url, api_key, model }),
         }
-        ApiType::AnthropicMessages => {
-            anthropic_messages::call(base_url, api_key, model, messages, tools, on_chunk).await
+    }
+}
+
+impl Provider for AnyProvider {
+    async fn call(
+        &self,
+        messages: Vec<Message>,
+        tools: &[ToolSchema],
+        on_chunk: &mut dyn FnMut(OutputChunk),
+    ) -> Result<(Message, Option<Usage>)> {
+        match self {
+            Self::Openai(p) => p.call(messages, tools, on_chunk).await,
+            Self::Anthropic(p) => p.call(messages, tools, on_chunk).await,
         }
     }
 }

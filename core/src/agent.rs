@@ -1,17 +1,17 @@
-use crate::provider;
-use crate::types::{ApiType, Message, OutputChunk, Role, Usage};
+use crate::provider::Provider;
+use crate::types::{Message, OutputChunk, Role, SessionEvent, ToolSchema};
 use anyhow::{Result, anyhow};
+use web_time::Instant;
 
 #[allow(async_fn_in_trait)]
 pub trait ToolExecutor {
-    fn schemas(&self) -> Vec<serde_json::Value>;
+    fn schemas(&self) -> Vec<ToolSchema>;
     async fn execute(&self, name: &str, args_json: &str) -> Result<String>;
 }
 
 /// Per-turn hooks for session logging. Implement in the shell; pass `None` to skip.
 pub trait SessionLogger {
-    fn on_request(&mut self, messages: &[Message]);
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>);
+    fn on_event(&mut self, event: &SessionEvent);
 }
 
 const MAX_TURNS: usize = 20;
@@ -21,10 +21,7 @@ const MAX_TURNS: usize = 20;
 /// The caller must push the user message before calling this.
 pub async fn run_turn(
     messages: &mut Vec<Message>,
-    api_type: &ApiType,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
+    provider: &impl Provider,
     executor: &impl ToolExecutor,
     mut logger: Option<&mut dyn SessionLogger>,
     on_chunk: &mut dyn FnMut(OutputChunk),
@@ -33,9 +30,10 @@ pub async fn run_turn(
 
     for _ in 0..MAX_TURNS {
         if let Some(ref mut l) = logger {
-            l.on_request(messages);
+            l.on_event(&SessionEvent::Request { messages: messages.clone() });
         }
 
+        let turn_start = Instant::now();
         let mut thinking_buf = String::new();
         let mut wrapped = |chunk: OutputChunk| {
             if let OutputChunk::Thinking { ref text } = chunk {
@@ -44,28 +42,18 @@ pub async fn run_turn(
             on_chunk(chunk);
         };
 
-        let (response, usage) = provider::call(
-            api_type,
-            base_url,
-            api_key,
-            model,
-            messages.clone(),
-            &tool_schemas,
-            &mut wrapped,
-        )
-        .await?;
+        let (response, usage) = provider
+            .call(messages.clone(), &tool_schemas, &mut wrapped)
+            .await?;
         drop(wrapped);
 
         if let Some(ref mut l) = logger {
-            l.on_response(
-                if thinking_buf.is_empty() {
-                    None
-                } else {
-                    Some(&thinking_buf)
-                },
-                &response,
-                usage.as_ref(),
-            );
+            l.on_event(&SessionEvent::Response {
+                thinking: if thinking_buf.is_empty() { None } else { Some(thinking_buf.clone()) },
+                message: response.clone(),
+                duration_ms: turn_start.elapsed().as_millis() as u64,
+                usage: usage.clone(),
+            });
         }
 
         if let Some(ref u) = usage {
@@ -113,10 +101,7 @@ pub const MAX_TURNS_FOR_TEST: usize = MAX_TURNS;
 pub async fn run(
     prompt: String,
     system_prompt: String,
-    api_type: &ApiType,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
+    provider: &impl Provider,
     executor: &impl ToolExecutor,
     logger: Option<&mut dyn SessionLogger>,
     on_chunk: &mut dyn FnMut(OutputChunk),
@@ -125,30 +110,23 @@ pub async fn run(
         Message::new(Role::System, system_prompt),
         Message::new(Role::User, prompt),
     ];
-    run_turn(
-        &mut messages,
-        api_type,
-        base_url,
-        api_key,
-        model,
-        executor,
-        logger,
-        on_chunk,
-    )
-    .await
+    run_turn(&mut messages, provider, executor, logger, on_chunk).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ApiType, Message, OutputChunk, Role};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use crate::provider::Provider;
+    use crate::types::{Message, OutputChunk, Role, ToolCall, ToolSchema, Usage};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    // ── Test fixtures ─────────────────────────────────────────────────────────
 
     struct EchoExecutor;
 
     impl ToolExecutor for EchoExecutor {
-        fn schemas(&self) -> Vec<serde_json::Value> {
+        fn schemas(&self) -> Vec<ToolSchema> {
             vec![]
         }
         async fn execute(&self, _name: &str, _args: &str) -> Result<String> {
@@ -169,56 +147,80 @@ mod tests {
     }
 
     impl SessionLogger for RecordingLogger {
-        fn on_request(&mut self, messages: &[Message]) {
-            self.request_counts.push(messages.len());
-        }
-        fn on_response(&mut self, thinking: Option<&str>, msg: &Message, _: Option<&Usage>) {
-            self.thinking_seen.push(thinking.is_some());
-            self.response_contents.push(msg.content.clone());
+        fn on_event(&mut self, event: &crate::types::SessionEvent) {
+            match event {
+                crate::types::SessionEvent::Request { messages } => {
+                    self.request_counts.push(messages.len());
+                }
+                crate::types::SessionEvent::Response { thinking, message, .. } => {
+                    self.thinking_seen.push(thinking.is_some());
+                    self.response_contents.push(message.content.clone());
+                }
+                _ => {}
+            }
         }
     }
 
-    fn oai_text_sse(text: &str) -> String {
-        format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}],\"usage\":null}}\ndata: [DONE]\n",
-            text = text
-        )
+    // ── MockProvider ──────────────────────────────────────────────────────────
+
+    struct MockResponse {
+        message: Message,
+        usage: Option<Usage>,
+        thinking: Option<String>,
     }
 
-    fn oai_tool_then_text_sse(text: &str) -> (String, String) {
-        let tool_response = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"tc0\",\"function\":{{\"name\":\"list_files\",\"arguments\":\"{{}}\"}}}}]}}}}],\"usage\":null}}\ndata: [DONE]\n"
-        );
-        let text_response = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}],\"usage\":null}}\ndata: [DONE]\n",
-            text = text
-        );
-        (tool_response, text_response)
+    struct MockProvider {
+        responses: RefCell<VecDeque<MockResponse>>,
     }
+
+    impl MockProvider {
+        fn new(responses: Vec<MockResponse>) -> Self {
+            Self { responses: RefCell::new(responses.into()) }
+        }
+
+        fn text(s: &str) -> Self {
+            Self::new(vec![MockResponse {
+                message: Message::new(Role::Assistant, s),
+                usage: None,
+                thinking: None,
+            }])
+        }
+    }
+
+    impl Provider for MockProvider {
+        async fn call(
+            &self,
+            _messages: Vec<Message>,
+            _tools: &[ToolSchema],
+            on_chunk: &mut dyn FnMut(OutputChunk),
+        ) -> Result<(Message, Option<Usage>)> {
+            let resp = self
+                .responses
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| anyhow!("MockProvider: no more responses"))?;
+            if let Some(ref t) = resp.thinking {
+                on_chunk(OutputChunk::Thinking { text: t.clone() });
+            }
+            if resp.message.tool_calls.is_none() && !resp.message.content.is_empty() {
+                on_chunk(OutputChunk::Content { text: resp.message.content.clone() });
+            }
+            Ok((resp.message, resp.usage))
+        }
+    }
+
+    // ── run_turn tests ────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn run_turn_returns_content() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("hello")))
-            .mount(&server)
-            .await;
-
+        let provider = MockProvider::text("hello");
         let mut messages = vec![
             Message::new(Role::System, "sys"),
             Message::new(Role::User, "hi"),
         ];
-        let result = run_turn(
-            &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
-            &EchoExecutor,
-            None,
-            &mut |_| {},
-        ).await.unwrap();
+        let result = run_turn(&mut messages, &provider, &EchoExecutor, None, &mut |_| {})
+            .await
+            .unwrap();
 
         assert_eq!(result, "hello");
         assert_eq!(messages.len(), 3); // sys + user + assistant
@@ -227,21 +229,20 @@ mod tests {
 
     #[tokio::test]
     async fn run_turn_executes_tool_then_returns() {
-        let server = MockServer::start().await;
-        let (tool_sse, text_sse) = oai_tool_then_text_sse("done");
-
-        // First call returns tool request, second returns final text
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(tool_sse))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(text_sse))
-            .mount(&server)
-            .await;
+        let mut tool_msg = Message::new(Role::Assistant, "");
+        tool_msg.tool_calls = Some(vec![ToolCall {
+            id: "tc0".into(),
+            name: "list_files".into(),
+            arguments: "{}".into(),
+        }]);
+        let provider = MockProvider::new(vec![
+            MockResponse { message: tool_msg, usage: None, thinking: None },
+            MockResponse {
+                message: Message::new(Role::Assistant, "done"),
+                usage: None,
+                thinking: None,
+            },
+        ]);
 
         let mut messages = vec![
             Message::new(Role::System, "sys"),
@@ -250,10 +251,7 @@ mod tests {
         let mut tool_calls_seen = vec![];
         let result = run_turn(
             &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
+            &provider,
             &EchoExecutor,
             None,
             &mut |c| {
@@ -261,7 +259,9 @@ mod tests {
                     tool_calls_seen.push(name.clone());
                 }
             },
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, "done");
         assert_eq!(tool_calls_seen, vec!["list_files"]);
@@ -269,60 +269,45 @@ mod tests {
 
     #[tokio::test]
     async fn run_turn_with_logger() {
-        let server = MockServer::start().await;
-        let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}],\"usage\":null}\ndata: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}],\"usage\":null}\ndata: [DONE]\n";
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
+        let provider = MockProvider::new(vec![MockResponse {
+            message: Message::new(Role::Assistant, "answer"),
+            usage: None,
+            thinking: Some("think".into()),
+        }]);
 
         let mut messages = vec![
             Message::new(Role::System, "sys"),
             Message::new(Role::User, "hi"),
         ];
         let mut logger = RecordingLogger::new();
-        run_turn(
-            &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
-            &EchoExecutor,
-            Some(&mut logger),
-            &mut |_| {},
-        ).await.unwrap();
+        run_turn(&mut messages, &provider, &EchoExecutor, Some(&mut logger), &mut |_| {})
+            .await
+            .unwrap();
 
         assert_eq!(logger.request_counts.len(), 1);
         assert_eq!(logger.request_counts[0], 2); // sys + user
-        assert_eq!(logger.thinking_seen, vec![true]); // thinking was seen
+        assert_eq!(logger.thinking_seen, vec![true]);
     }
 
     #[tokio::test]
     async fn run_turn_max_turns_exceeded() {
-        let server = MockServer::start().await;
-        let tool_sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc\",\"function\":{\"name\":\"list_files\",\"arguments\":\"{}\"}}]}}],\"usage\":null}\ndata: [DONE]\n";
-        // Always return a tool call — agent will loop until MAX_TURNS
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(tool_sse))
-            .mount(&server)
-            .await;
+        let mut responses = vec![];
+        for _ in 0..=MAX_TURNS_FOR_TEST {
+            let mut msg = Message::new(Role::Assistant, "");
+            msg.tool_calls = Some(vec![ToolCall {
+                id: "tc".into(),
+                name: "list_files".into(),
+                arguments: "{}".into(),
+            }]);
+            responses.push(MockResponse { message: msg, usage: None, thinking: None });
+        }
+        let provider = MockProvider::new(responses);
 
         let mut messages = vec![
             Message::new(Role::System, "sys"),
             Message::new(Role::User, "loop"),
         ];
-        let result = run_turn(
-            &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
-            &EchoExecutor,
-            None,
-            &mut |_| {},
-        ).await;
+        let result = run_turn(&mut messages, &provider, &EchoExecutor, None, &mut |_| {}).await;
 
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -331,24 +316,17 @@ mod tests {
 
     #[tokio::test]
     async fn run_convenience_wraps_run_turn() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("result")))
-            .mount(&server)
-            .await;
-
+        let provider = MockProvider::text("result");
         let result = run(
             "user prompt".into(),
             "system prompt".into(),
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
+            &provider,
             &EchoExecutor,
             None,
             &mut |_| {},
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, "result");
     }
@@ -357,25 +335,26 @@ mod tests {
     async fn run_turn_tool_executor_error_captured() {
         struct FailExecutor;
         impl ToolExecutor for FailExecutor {
-            fn schemas(&self) -> Vec<serde_json::Value> { vec![] }
+            fn schemas(&self) -> Vec<ToolSchema> { vec![] }
             async fn execute(&self, _: &str, _: &str) -> Result<String> {
                 Err(anyhow!("tool failed"))
             }
         }
 
-        let server = MockServer::start().await;
-        let (tool_sse, text_sse) = oai_tool_then_text_sse("final");
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(tool_sse))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(text_sse))
-            .mount(&server)
-            .await;
+        let mut tool_msg = Message::new(Role::Assistant, "");
+        tool_msg.tool_calls = Some(vec![ToolCall {
+            id: "tc".into(),
+            name: "list_files".into(),
+            arguments: "{}".into(),
+        }]);
+        let provider = MockProvider::new(vec![
+            MockResponse { message: tool_msg, usage: None, thinking: None },
+            MockResponse {
+                message: Message::new(Role::Assistant, "final"),
+                usage: None,
+                thinking: None,
+            },
+        ]);
 
         let mut messages = vec![
             Message::new(Role::System, "sys"),
@@ -384,10 +363,7 @@ mod tests {
         let mut results_seen = vec![];
         let _ = run_turn(
             &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
+            &provider,
             &FailExecutor,
             None,
             &mut |c| {
@@ -395,30 +371,26 @@ mod tests {
                     results_seen.push(output.clone());
                 }
             },
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
-        // Error from executor is captured as "error: ..." result, not propagated
         assert!(results_seen.iter().any(|r| r.starts_with("error:")));
     }
 
     #[tokio::test]
     async fn run_turn_usage_chunk_emitted() {
-        let server = MockServer::start().await;
-        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\ndata: [DONE]\n";
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
+        let provider = MockProvider::new(vec![MockResponse {
+            message: Message::new(Role::Assistant, "hi"),
+            usage: Some(Usage { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            thinking: None,
+        }]);
 
         let mut messages = vec![Message::new(Role::User, "hi")];
         let mut usage_chunks = vec![];
         run_turn(
             &mut messages,
-            &ApiType::OpenaiCompletions,
-            &server.uri(),
-            "key",
-            "model",
+            &provider,
             &EchoExecutor,
             None,
             &mut |c| {
@@ -426,7 +398,9 @@ mod tests {
                     usage_chunks.push(c);
                 }
             },
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         assert_eq!(usage_chunks.len(), 1);
         assert!(matches!(&usage_chunks[0], OutputChunk::Usage { total_tokens: 7, .. }));

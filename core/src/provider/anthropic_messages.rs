@@ -1,4 +1,4 @@
-use crate::types::{Message, OutputChunk, Role, ToolCall, Usage};
+use crate::types::{Message, OutputChunk, Role, ToolCall, ToolSchema, Usage};
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -10,17 +10,15 @@ const DEFAULT_MAX_TOKENS: u32 = 8096;
 
 // ── Wire serialisation ────────────────────────────────────────────────────────
 
-/// Converts an OpenAI-format tool schema to Anthropic format.
-/// OAI:       {"type":"function","function":{"name":"...","description":"...","parameters":{...}}}
+/// Converts a ToolSchema to Anthropic wire format.
 /// Anthropic: {"name":"...","description":"...","input_schema":{...}}
-fn tool_schema_to_anthropic(oai_schema: &Value) -> Value {
-    let func = &oai_schema["function"];
+fn tool_schema_to_anthropic(schema: &ToolSchema) -> Value {
     let mut result = serde_json::json!({
-        "name": func["name"],
-        "input_schema": func["parameters"],
+        "name": schema.name,
+        "input_schema": schema.parameters,
     });
-    if let Some(desc) = func.get("description") {
-        result["description"] = desc.clone();
+    if !schema.description.is_empty() {
+        result["description"] = Value::String(schema.description.clone());
     }
     result
 }
@@ -180,7 +178,7 @@ pub async fn call(
     api_key: &str,
     model: &str,
     messages: Vec<Message>,
-    tools: &[Value],
+    tools: &[ToolSchema],
     on_chunk: &mut dyn FnMut(OutputChunk),
 ) -> Result<(Message, Option<Usage>)> {
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
@@ -335,15 +333,12 @@ mod tests {
 
     #[test]
     fn schema_conversion_with_description() {
-        let oai = serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search the web",
-                "parameters": {"type": "object", "properties": {}}
-            }
-        });
-        let result = tool_schema_to_anthropic(&oai);
+        let schema = crate::types::ToolSchema {
+            name: "search".into(),
+            description: "Search the web".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        };
+        let result = tool_schema_to_anthropic(&schema);
         assert_eq!(result["name"], "search");
         assert_eq!(result["description"], "Search the web");
         assert_eq!(result["input_schema"]["type"], "object");
@@ -351,14 +346,12 @@ mod tests {
 
     #[test]
     fn schema_conversion_without_description() {
-        let oai = serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "ping",
-                "parameters": {"type": "object"}
-            }
-        });
-        let result = tool_schema_to_anthropic(&oai);
+        let schema = crate::types::ToolSchema {
+            name: "ping".into(),
+            description: "".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let result = tool_schema_to_anthropic(&schema);
         assert_eq!(result["name"], "ping");
         assert!(result.get("description").is_none());
     }

@@ -1,6 +1,6 @@
-use cooper_core::{Message, SessionLogger, Usage};
+use cooper_core::{SessionEvent, SessionLogger};
 use js_sys::Date;
-use serde::Serialize;
+use serde_json::json;
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -12,26 +12,6 @@ use web_sys::{
 const DB_NAME: &str = "cooper_sessions";
 const DB_VERSION: u32 = 1;
 const STORE_NAME: &str = "entries";
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum SessionEntry {
-    Request {
-        session_id: String,
-        messages: Vec<Message>,
-        timestamp: f64,
-    },
-    Response {
-        session_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        thinking: Option<String>,
-        message: Message,
-        duration_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<Usage>,
-        timestamp: f64,
-    },
-}
 
 async fn open_db() -> Result<IdbDatabase, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
@@ -84,8 +64,18 @@ async fn open_db() -> Result<IdbDatabase, JsValue> {
     JsFuture::from(promise).await?.dyn_into()
 }
 
-async fn write_entry(entry: SessionEntry) {
-    let json = match serde_json::to_string(&entry) {
+/// Serialize a `SessionEvent` enriched with `session_id` and `timestamp` fields,
+/// then write the resulting JSON object to IndexedDB.
+async fn write_entry(session_id: String, event: SessionEvent) {
+    let mut val = match serde_json::to_value(&event) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("session_id".into(), json!(session_id));
+        obj.insert("timestamp".into(), json!(Date::now()));
+    }
+    let json = match serde_json::to_string(&val) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -108,42 +98,32 @@ async fn write_entry(entry: SessionEntry) {
 
 pub struct WasmSessionLogger {
     session_id: String,
-    turn_start_ms: Option<f64>,
 }
 
 impl WasmSessionLogger {
-    pub fn new() -> Self {
-        Self {
-            session_id: Uuid::new_v4().to_string(),
-            turn_start_ms: None,
-        }
+    pub fn new(provider: &str, model: &str) -> Self {
+        let session_id = Uuid::new_v4().to_string();
+        let logger = Self { session_id: session_id.clone() };
+        let started_at = js_sys::Date::new_0()
+            .to_iso_string()
+            .as_string()
+            .unwrap_or_default();
+        let event = SessionEvent::SessionStart {
+            id: session_id.clone(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            project: String::new(),
+            started_at,
+        };
+        spawn_local(async move { write_entry(session_id, event).await });
+        logger
     }
 }
 
 impl SessionLogger for WasmSessionLogger {
-    fn on_request(&mut self, messages: &[Message]) {
-        self.turn_start_ms = Some(Date::now());
-        let entry = SessionEntry::Request {
-            session_id: self.session_id.clone(),
-            messages: messages.to_vec(),
-            timestamp: Date::now(),
-        };
-        spawn_local(async move { write_entry(entry).await });
-    }
-
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>) {
-        let duration_ms = self
-            .turn_start_ms
-            .map(|start| (Date::now() - start) as u64)
-            .unwrap_or(0);
-        let entry = SessionEntry::Response {
-            session_id: self.session_id.clone(),
-            thinking: thinking.map(str::to_string),
-            message: message.clone(),
-            duration_ms,
-            usage: usage.cloned(),
-            timestamp: Date::now(),
-        };
-        spawn_local(async move { write_entry(entry).await });
+    fn on_event(&mut self, event: &SessionEvent) {
+        let session_id = self.session_id.clone();
+        let event = event.clone();
+        spawn_local(async move { write_entry(session_id, event).await });
     }
 }

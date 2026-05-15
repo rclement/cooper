@@ -1,41 +1,15 @@
 use crate::config::{AgentInstructions, ResolvedConfig};
-use crate::output::OutputChunk;
-use crate::skills::SkillRegistry;
+use crate::skills::LoadedSkills;
 use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use cooper_core::{ApiType, Message, Role, SessionLogger, Usage};
-use serde::{Deserialize, Serialize};
+use cooper_core::{AnyProvider, Message, OutputChunk, Role, SessionEvent, SessionLogger, ToolSchema};
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Instant;
 use uuid::Uuid;
 
 // ── Session logging ───────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum SessionEntry {
-    Session {
-        id: String,
-        provider: String,
-        model: String,
-        project: String,
-        started_at: String,
-    },
-    Request {
-        messages: Vec<Message>,
-    },
-    Response {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        thinking: Option<String>,
-        message: Message,
-        duration_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<Usage>,
-    },
-}
 
 fn session_file(session_id: &str) -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
@@ -51,50 +25,24 @@ fn session_file(session_id: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{}.jsonl", session_id)))
 }
 
-fn append(path: &PathBuf, entry: &SessionEntry) -> Result<()> {
-    let line = serde_json::to_string(entry).context("serializing session entry")?;
+fn append(path: &PathBuf, event: &SessionEvent) -> Result<()> {
+    let line = serde_json::to_string(event).context("serializing session event")?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .with_context(|| format!("opening session file {}", path.display()))?;
-    writeln!(file, "{}", line).context("writing session entry")
+    writeln!(file, "{}", line).context("writing session event")
 }
 
 struct FileSessionLogger {
     path: PathBuf,
-    turn_start: Option<Instant>,
 }
 
 impl SessionLogger for FileSessionLogger {
-    fn on_request(&mut self, messages: &[Message]) {
-        self.turn_start = Some(Instant::now());
-        if let Err(e) = append(
-            &self.path,
-            &SessionEntry::Request {
-                messages: messages.to_vec(),
-            },
-        ) {
-            eprintln!("warning: could not write session request: {}", e);
-        }
-    }
-
-    fn on_response(&mut self, thinking: Option<&str>, message: &Message, usage: Option<&Usage>) {
-        let duration_ms = self
-            .turn_start
-            .take()
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        if let Err(e) = append(
-            &self.path,
-            &SessionEntry::Response {
-                thinking: thinking.map(str::to_string),
-                message: message.clone(),
-                duration_ms,
-                usage: usage.cloned(),
-            },
-        ) {
-            eprintln!("warning: could not write session response: {}", e);
+    fn on_event(&mut self, event: &SessionEvent) {
+        if let Err(e) = append(&self.path, event) {
+            eprintln!("warning: could not write session event: {}", e);
         }
     }
 }
@@ -106,17 +54,13 @@ impl SessionLogger for FileSessionLogger {
 /// result and storing it so the session can patch the system prompt afterward.
 struct SessionRegistry<'a> {
     tools: &'a ToolRegistry,
-    skills: &'a SkillRegistry,
-    activated: RefCell<Option<String>>, // skill body if activated this turn
+    skills: &'a LoadedSkills,
+    activated: RefCell<Option<String>>,
 }
 
 impl<'a> SessionRegistry<'a> {
-    fn new(tools: &'a ToolRegistry, skills: &'a SkillRegistry) -> Self {
-        Self {
-            tools,
-            skills,
-            activated: RefCell::new(None),
-        }
+    fn new(tools: &'a ToolRegistry, skills: &'a LoadedSkills) -> Self {
+        Self { tools, skills, activated: RefCell::new(None) }
     }
 
     fn take_activated(&self) -> Option<String> {
@@ -126,7 +70,7 @@ impl<'a> SessionRegistry<'a> {
 
 /// Builds the `activate_skill` tool schema from the available skill registry.
 /// Returns `None` when no skills are registered (tool should not be exposed).
-pub fn activate_skill_schema(skills: &SkillRegistry) -> Option<serde_json::Value> {
+pub fn activate_skill_schema(skills: &cooper_core::SkillRegistry) -> Option<ToolSchema> {
     let skill_list = skills.all();
     if skill_list.is_empty() {
         return None;
@@ -146,34 +90,31 @@ pub fn activate_skill_schema(skills: &SkillRegistry) -> Option<serde_json::Value
         .iter()
         .map(|s| serde_json::Value::String(s.name.clone()))
         .collect();
-    Some(serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "activate_skill",
-            "description": format!(
-                "Load specialized instructions for the current task. \
-                Call this BEFORE starting work whenever the user's request matches a skill's domain — do not wait to be asked explicitly.\n\n\
-                Available skills:\n{}",
-                catalog
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "description": "Name of the skill to activate",
-                        "enum": valid_names
-                    }
-                },
-                "required": ["skill"]
-            }
-        }
-    }))
+    Some(ToolSchema {
+        name: "activate_skill".to_string(),
+        description: format!(
+            "Load specialized instructions for the current task. \
+            Call this BEFORE starting work whenever the user's request matches a skill's domain — do not wait to be asked explicitly.\n\n\
+            Available skills:\n{}",
+            catalog
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "Name of the skill to activate",
+                    "enum": valid_names
+                }
+            },
+            "required": ["skill"]
+        }),
+    })
 }
 
 impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
-    fn schemas(&self) -> Vec<serde_json::Value> {
-        let mut schemas = self.tools.all_oai_schemas();
+    fn schemas(&self) -> Vec<ToolSchema> {
+        let mut schemas = self.tools.schemas();
         if let Some(schema) = activate_skill_schema(self.skills) {
             schemas.push(schema);
         }
@@ -191,25 +132,21 @@ impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
                 .skills
                 .find(skill_name)
                 .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
-            // Store raw body for system prompt patching (unchanged by wrapping below)
             *self.activated.borrow_mut() = Some(skill.system_prompt.clone());
 
-            // Only bundled (directory-based) skills have a dedicated directory to scan.
-            // Flat skills live directly in a shared skills/ folder — scanning their parent
-            // would expose sibling skill files as resources, which is wrong.
-            let is_bundled = skill.source.file_name().and_then(|n| n.to_str()) == Some("skill.md");
-            let skill_dir = if is_bundled {
-                skill.source.parent()
-            } else {
-                None
-            };
+            // Bundle dir is only set for skills loaded from a name/skill.md directory.
+            // Flat-file skills have no dedicated directory to scan for resources.
+            let skill_dir = self.skills.bundle_dir(skill_name);
 
             let resources: Vec<String> = skill_dir
                 .and_then(|dir| std::fs::read_dir(dir).ok())
                 .map(|entries| {
                     let mut files: Vec<String> = entries
                         .filter_map(|e| e.ok())
-                        .filter(|e| e.path().is_file() && e.path() != skill.source)
+                        .filter(|e| {
+                            e.path().is_file()
+                                && e.file_name().to_str() != Some("skill.md")
+                        })
                         .filter_map(|e| e.file_name().to_str().map(str::to_string))
                         .collect();
                     files.sort();
@@ -218,16 +155,13 @@ impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
                 .unwrap_or_default();
 
             let mut result = format!("<skill_content name=\"{}\">", skill_name);
-
             if !skill.system_prompt.is_empty() {
                 result.push('\n');
                 result.push_str(skill.system_prompt.trim_end());
             }
-
             if let Some(dir) = skill_dir {
                 result.push_str(&format!("\n\nSkill directory: {}", dir.display()));
             }
-
             if !resources.is_empty() {
                 result.push_str("\n\n<skill_resources>");
                 for file in &resources {
@@ -235,7 +169,6 @@ impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
                 }
                 result.push_str("\n</skill_resources>");
             }
-
             result.push_str("\n</skill_content>");
             return Ok(result);
         }
@@ -247,10 +180,7 @@ impl<'a> cooper_core::ToolExecutor for SessionRegistry<'a> {
 
 pub struct Session {
     messages: Vec<Message>,
-    api_type: ApiType,
-    base_url: String,
-    api_key: String,
-    model: String,
+    provider: AnyProvider,
     logger: FileSessionLogger,
 }
 
@@ -263,7 +193,7 @@ impl Session {
         model_name: Option<String>,
         config: &ResolvedConfig,
         tool_registry: &ToolRegistry,
-        skill_registry: &SkillRegistry,
+        skill_registry: &LoadedSkills,
         on_chunk: &mut dyn FnMut(OutputChunk),
     ) -> Result<Self> {
         let provider_key = provider_name
@@ -272,13 +202,13 @@ impl Session {
                 anyhow!("no provider specified; set default_provider in config or use --provider")
             })?;
 
-        let provider = config
+        let provider_cfg = config
             .providers
             .get(&provider_key)
             .ok_or_else(|| anyhow!("provider '{}' not found in configuration", provider_key))?;
 
         let model = model_name
-            .or_else(|| provider.models.first().map(|m| m.id.clone()))
+            .or_else(|| provider_cfg.models.first().map(|m| m.id.clone()))
             .or_else(|| config.default_model.clone())
             .ok_or_else(|| {
                 anyhow!("no model specified; add a model to the provider config or use --model")
@@ -295,14 +225,7 @@ impl Session {
             Some(names) => names.clone(),
         };
 
-        let skill_names: Vec<String> = skill_registry
-            .all()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-
-        // Mirror the tools Option semantics: None = no skill system active (nothing to show),
-        // Some(names) = skill system is in play (show names or "(none)" if filtered to empty).
+        let skill_names: Vec<String> = skill_registry.all().iter().map(|s| s.name.clone()).collect();
         let skills_display: Option<Vec<String>> =
             if skill_names.is_empty() && config.context.allowed_skills.is_none() {
                 None
@@ -360,55 +283,41 @@ impl Session {
             base: system_prompt.unwrap_or_else(|| config.system_prompt.clone()),
             date: Some(Utc::now().format("%Y-%m-%d").to_string()),
             cwd: Some(cwd.display().to_string()),
-            skills: skill_registry
-                .all()
-                .iter()
-                .map(|s| cooper_core::system_prompt::SkillInfo {
-                    name: s.name.clone(),
-                    description: s.description.clone(),
-                })
-                .collect(),
+            skills: skill_registry.all().to_vec(),
             agent_instructions,
             context_files,
         });
 
         let session_id = Uuid::new_v4().to_string();
         let path = session_file(&session_id)?;
-        append(
-            &path,
-            &SessionEntry::Session {
-                id: session_id,
-                provider: provider_key,
-                model: model.clone(),
-                project: cwd.to_string_lossy().to_string(),
-                started_at: Utc::now().to_rfc3339(),
-            },
-        )?;
+        let mut logger = FileSessionLogger { path };
+        logger.on_event(&SessionEvent::SessionStart {
+            id: session_id,
+            provider: provider_key,
+            model: model.clone(),
+            project: cwd.to_string_lossy().to_string(),
+            started_at: Utc::now().to_rfc3339(),
+        });
+
+        let provider = AnyProvider::new(
+            &provider_cfg.api,
+            provider_cfg.base_url.clone(),
+            provider_cfg.api_key.clone().unwrap_or_default(),
+            model,
+        );
 
         Ok(Session {
             messages: vec![Message::new(Role::System, system)],
-            api_type: provider.api.clone(),
-            base_url: provider.base_url.clone(),
-            api_key: provider.api_key.clone().unwrap_or_default(),
-            model,
-            logger: FileSessionLogger {
-                path,
-                turn_start: None,
-            },
+            provider,
+            logger,
         })
     }
 
-    /// Returns the current system prompt content.
     pub fn system_prompt(&self) -> &str {
-        self.messages
-            .first()
-            .map(|m| m.content.as_str())
-            .unwrap_or("")
+        self.messages.first().map(|m| m.content.as_str()).unwrap_or("")
     }
 
     /// Inject or replace the skill block in the system prompt.
-    /// Replaces an existing `<skill-instructions>` block if present, otherwise appends one.
-    /// Passing an empty `body` removes an existing block without adding a new one.
     pub fn inject_skill(&mut self, body: &str) {
         let Some(sys) = self.messages.first_mut() else {
             return;
@@ -423,43 +332,32 @@ impl Session {
                 } else {
                     format!("{}{}{}", OPEN, body.trim_end(), CLOSE)
                 };
-                sys.content = format!(
-                    "{}{}{}",
-                    &sys.content[..start],
-                    new_block,
-                    &sys.content[end..]
-                );
+                sys.content =
+                    format!("{}{}{}", &sys.content[..start], new_block, &sys.content[end..]);
                 return;
             }
         }
         if !body.is_empty() {
-            sys.content
-                .push_str(&format!("{}{}{}", OPEN, body.trim_end(), CLOSE));
+            sys.content.push_str(&format!("{}{}{}", OPEN, body.trim_end(), CLOSE));
         }
     }
 
-    /// Send a user message and stream the response, keeping history for follow-up turns.
-    /// If the model calls `activate_skill`, the skill body is injected into the system
-    /// prompt so subsequent turns have it persistently.
+    /// Send a user message and stream the response.
     pub async fn send(
         &mut self,
         input: String,
         tool_registry: &ToolRegistry,
-        skill_registry: &SkillRegistry,
+        skill_registry: &LoadedSkills,
         on_chunk: &mut dyn FnMut(OutputChunk),
     ) -> Result<String> {
         self.messages.push(Message::new(Role::User, input));
         let executor = SessionRegistry::new(tool_registry, skill_registry);
-        let mut wrapped = |c: cooper_core::OutputChunk| on_chunk(OutputChunk::from(c));
         let result = cooper_core::agent::run_turn(
             &mut self.messages,
-            &self.api_type,
-            &self.base_url,
-            &self.api_key,
-            &self.model,
+            &self.provider,
             &executor,
             Some(&mut self.logger),
-            &mut wrapped,
+            on_chunk,
         )
         .await?;
 
@@ -476,12 +374,40 @@ impl Session {
     }
 }
 
+// ── Single-shot entry point (used by `cooper prompt`) ────────────────────────
+
+pub async fn run(
+    prompt: String,
+    system_prompt: Option<String>,
+    active_skill: Option<String>,
+    provider_name: Option<String>,
+    model_name: Option<String>,
+    config: &ResolvedConfig,
+    registry: &ToolRegistry,
+    on_chunk: &mut dyn FnMut(OutputChunk),
+) -> Result<String> {
+    let empty_skills = LoadedSkills::empty();
+    let mut session = Session::start(
+        system_prompt,
+        active_skill,
+        provider_name,
+        model_name,
+        config,
+        registry,
+        &empty_skills,
+        on_chunk,
+    )
+    .await?;
+    session.send(prompt, registry, &empty_skills, on_chunk).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ApiType, ContextConfig, ModelConfig, ProviderConfig, ResolvedConfig};
-    use crate::skills::SkillRegistry;
+    use crate::skills::{LoadedSkills, load_from_dir_pub};
     use crate::tools::ToolRegistry;
+    use cooper_core::AnyProvider;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -499,7 +425,6 @@ mod tests {
         fn new() -> Self {
             let dir = TempDir::new().unwrap();
             let orig = std::env::var("HOME").ok();
-            // SAFETY: serialised by ENV_LOCK — no concurrent env reads in these tests.
             unsafe { std::env::set_var("HOME", dir.path()) };
             Self { _dir: dir, orig }
         }
@@ -507,7 +432,6 @@ mod tests {
 
     impl Drop for TempHome {
         fn drop(&mut self) {
-            // SAFETY: serialised by ENV_LOCK.
             unsafe {
                 match &self.orig {
                     Some(h) => std::env::set_var("HOME", h),
@@ -538,21 +462,20 @@ mod tests {
         format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}],\"usage\":null}}\ndata: [DONE]\n")
     }
 
-    // ── Session::inject_skill ─────────────────────────────────────────────────
-
     fn dummy_session(system: &str) -> Session {
         Session {
             messages: vec![cooper_core::Message::new(cooper_core::Role::System, system)],
-            api_type: ApiType::OpenaiCompletions,
-            base_url: "http://localhost".into(),
-            api_key: "key".into(),
-            model: "model".into(),
-            logger: FileSessionLogger {
-                path: std::path::PathBuf::from("/dev/null"),
-                turn_start: None,
-            },
+            provider: AnyProvider::new(
+                &ApiType::OpenaiCompletions,
+                "http://localhost".into(),
+                "key".into(),
+                "model".into(),
+            ),
+            logger: FileSessionLogger { path: std::path::PathBuf::from("/dev/null") },
         }
     }
+
+    // ── Session::inject_skill ─────────────────────────────────────────────────
 
     #[test]
     fn system_prompt_returns_first_message_content() {
@@ -577,7 +500,6 @@ mod tests {
         let prompt = s.system_prompt();
         assert!(!prompt.contains("first"));
         assert!(prompt.contains("second"));
-        // Only one block present
         assert_eq!(prompt.matches("<skill-instructions>").count(), 1);
     }
 
@@ -586,14 +508,13 @@ mod tests {
         let mut s = dummy_session("base");
         s.inject_skill("some skill");
         s.inject_skill("");
-        let prompt = s.system_prompt();
-        assert!(!prompt.contains("<skill-instructions>"));
+        assert!(!s.system_prompt().contains("<skill-instructions>"));
     }
 
     #[test]
     fn inject_skill_empty_body_no_block_is_noop() {
         let mut s = dummy_session("base");
-        s.inject_skill(""); // no block to remove — should not panic or append
+        s.inject_skill("");
         assert_eq!(s.system_prompt(), "base");
     }
 
@@ -602,7 +523,6 @@ mod tests {
         let mut s = dummy_session("base");
         s.inject_skill("content   \n\n");
         let prompt = s.system_prompt();
-        // trim_end should have removed trailing whitespace before </skill-instructions>
         assert!(!prompt.contains("content   \n\n</skill-instructions>"));
         assert!(prompt.contains("content"));
     }
@@ -611,8 +531,7 @@ mod tests {
 
     #[test]
     fn activate_skill_schema_empty_registry_returns_none() {
-        let reg = SkillRegistry::empty();
-        assert!(activate_skill_schema(&reg).is_none());
+        assert!(activate_skill_schema(&LoadedSkills::empty()).is_none());
     }
 
     #[test]
@@ -622,12 +541,10 @@ mod tests {
             tmp.path().join("coding.md"),
             "---\nname: coding\ndescription: helps with code\n---\nDo code.",
         ).unwrap();
-        let skills = crate::skills::SkillRegistry {
-            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
-        };
+        let skills = load_from_dir_pub(tmp.path()).unwrap();
         let schema = activate_skill_schema(&skills).unwrap();
-        assert_eq!(schema["function"]["name"], "activate_skill");
-        let variants = schema["function"]["parameters"]["properties"]["skill"]["enum"].as_array().unwrap();
+        assert_eq!(schema.name, "activate_skill");
+        let variants = schema.parameters["properties"]["skill"]["enum"].as_array().unwrap();
         assert!(variants.iter().any(|v| v == "coding"));
     }
 
@@ -638,26 +555,19 @@ mod tests {
             tmp.path().join("review.md"),
             "---\nname: review\ndescription: code review\n---\nReview.",
         ).unwrap();
-        let skills = crate::skills::SkillRegistry {
-            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
-        };
+        let skills = load_from_dir_pub(tmp.path()).unwrap();
         let schema = activate_skill_schema(&skills).unwrap();
-        let desc = schema["function"]["description"].as_str().unwrap();
-        assert!(desc.contains("review: code review"));
+        assert!(schema.description.contains("review: code review"));
     }
 
     #[test]
     fn activate_skill_schema_skill_without_description() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("bare.md"), "bare content").unwrap();
-        let skills = crate::skills::SkillRegistry {
-            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
-        };
+        let skills = load_from_dir_pub(tmp.path()).unwrap();
         let schema = activate_skill_schema(&skills).unwrap();
-        let desc = schema["function"]["description"].as_str().unwrap();
-        // No description means just the name, not "name: "
-        assert!(desc.contains("bare"));
-        assert!(!desc.contains("bare: "));
+        assert!(schema.description.contains("bare"));
+        assert!(!schema.description.contains("bare: "));
     }
 
     // ── Session::start ────────────────────────────────────────────────────────
@@ -669,7 +579,7 @@ mod tests {
         let server = MockServer::start().await;
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
         let mut chunks = vec![];
         let session = Session::start(
@@ -679,7 +589,6 @@ mod tests {
         ).await.unwrap();
 
         assert!(session.system_prompt().contains("You are helpful"));
-        // SessionStart chunk emitted
         assert!(chunks.iter().any(|c| matches!(c, OutputChunk::SessionStart { .. })));
     }
 
@@ -690,14 +599,9 @@ mod tests {
         let mut config = make_config("http://localhost");
         config.default_provider = None;
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let result = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await;
-
+        let result = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await;
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("provider"));
     }
@@ -708,14 +612,9 @@ mod tests {
         let _home = TempHome::new();
         let config = make_config("http://localhost");
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let result = Session::start(
-            None, None, Some("nonexistent".into()), None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await;
-
+        let result = Session::start(None, None, Some("nonexistent".into()), None, &config, &tools, &skills, &mut |_| {}).await;
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("nonexistent"));
     }
@@ -725,18 +624,12 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let mut config = make_config("http://localhost");
-        // Remove model from provider
         config.providers.get_mut("test").unwrap().models = vec![];
         config.default_model = None;
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let result = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await;
-
+        let result = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await;
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("model"));
     }
@@ -748,23 +641,16 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("world")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let skills = LoadedSkills::empty();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
-        let result = session.send("hello".into(), &tools, &skills, &mut |_| {}).await.unwrap();
-        assert_eq!(result, "world");
+        assert_eq!(session.send("hello".into(), &tools, &skills, &mut |_| {}).await.unwrap(), "world");
     }
 
     #[tokio::test]
@@ -773,37 +659,24 @@ mod tests {
         let _home = TempHome::new();
         let server = MockServer::start().await;
 
-        // First call returns activate_skill tool call
         let activate_sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc0\",\"function\":{\"name\":\"activate_skill\",\"arguments\":\"{\\\"skill\\\":\\\"coding\\\"}\"}}]}}],\"usage\":null}\ndata: [DONE]\n";
-        // Second call returns final text
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(activate_sse))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("coded")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let tmp_skills = TempDir::new().unwrap();
         std::fs::write(tmp_skills.path().join("coding.md"), "---\nname: coding\n---\nWrite great code.").unwrap();
-        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
-        let skills = SkillRegistry { skills: skill_list };
+        let skills = load_from_dir_pub(tmp_skills.path()).unwrap();
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let result = session.send("write code".into(), &tools, &skills, &mut |_| {}).await.unwrap();
         assert_eq!(result, "coded");
-        // Skill instructions injected into system prompt after activation
         assert!(session.system_prompt().contains("<skill-instructions>"));
         assert!(session.system_prompt().contains("Write great code"));
     }
@@ -814,14 +687,13 @@ mod tests {
     fn inject_skill_no_messages_is_noop() {
         let mut s = Session {
             messages: vec![],
-            api_type: ApiType::OpenaiCompletions,
-            base_url: "http://localhost".into(),
-            api_key: "key".into(),
-            model: "model".into(),
-            logger: FileSessionLogger {
-                path: std::path::PathBuf::from("/dev/null"),
-                turn_start: None,
-            },
+            provider: AnyProvider::new(
+                &ApiType::OpenaiCompletions,
+                "http://localhost".into(),
+                "key".into(),
+                "model".into(),
+            ),
+            logger: FileSessionLogger { path: std::path::PathBuf::from("/dev/null") },
         };
         s.inject_skill("should not panic");
         assert!(s.messages.is_empty());
@@ -834,19 +706,11 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let mut config = make_config("http://localhost");
-        config.context.agent_instructions =
-            Some(crate::config::AgentInstructions::Enabled(false));
+        config.context.agent_instructions = Some(crate::config::AgentInstructions::Enabled(false));
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let mut chunks = vec![];
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |c| chunks.push(c),
-        ).await.unwrap();
-
-        // instructions_entry is None → no agent-instructions block in system prompt
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(!session.system_prompt().contains("<agent-instructions>"));
     }
 
@@ -855,18 +719,11 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let mut config = make_config("http://localhost");
-        config.context.agent_instructions =
-            Some(crate::config::AgentInstructions::Enabled(true));
+        config.context.agent_instructions = Some(crate::config::AgentInstructions::Enabled(true));
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        // AGENTS.md doesn't exist in temp home — should succeed without warning
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
-
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(!session.system_prompt().is_empty());
     }
 
@@ -877,23 +734,15 @@ mod tests {
         let prev = std::env::current_dir().unwrap();
         let tmp_cwd = TempDir::new().unwrap();
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
-
         std::fs::write(tmp_cwd.path().join("CUSTOM.md"), "Custom agent instructions").unwrap();
 
         let mut config = make_config("http://localhost");
-        config.context.agent_instructions =
-            Some(crate::config::AgentInstructions::File("CUSTOM.md".into()));
+        config.context.agent_instructions = Some(crate::config::AgentInstructions::File("CUSTOM.md".into()));
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
-
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(session.system_prompt().contains("Custom agent instructions"));
-
         std::env::set_current_dir(prev).unwrap();
     }
 
@@ -906,21 +755,13 @@ mod tests {
         std::env::set_current_dir(tmp_cwd.path()).unwrap();
 
         let mut config = make_config("http://localhost");
-        config.context.agent_instructions =
-            Some(crate::config::AgentInstructions::File("nonexistent.md".into()));
+        config.context.agent_instructions = Some(crate::config::AgentInstructions::File("nonexistent.md".into()));
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        // Should succeed despite missing file — just warns to stderr
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
-
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(!session.system_prompt().is_empty());
         assert!(!session.system_prompt().contains("<agent-instructions>"));
-
         std::env::set_current_dir(prev).unwrap();
     }
 
@@ -937,14 +778,9 @@ mod tests {
         let mut config = make_config("http://localhost");
         config.context.files = vec![ctx_file.to_string_lossy().into_owned()];
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
-
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(session.system_prompt().contains("important context content"));
     }
 
@@ -955,19 +791,13 @@ mod tests {
         let mut config = make_config("http://localhost");
         config.context.files = vec!["/tmp/cooper_test_nonexistent_ctx_file.md".into()];
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
-        // Should succeed even with a missing context file
-        let session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
-
+        let session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
         assert!(!session.system_prompt().is_empty());
     }
 
-    // ── Session::start — model and tools overrides ────────────────────────────
+    // ── Session::start — model / tools / skills ───────────────────────────────
 
     #[tokio::test]
     async fn session_start_explicit_model_name_overrides_provider() {
@@ -976,7 +806,7 @@ mod tests {
         let server = MockServer::start().await;
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
         let mut chunk_model = String::new();
         Session::start(
@@ -999,7 +829,7 @@ mod tests {
         let mut config = make_config("http://localhost");
         config.context.allowed_tools = Some(vec!["read_file".into()]);
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
+        let skills = LoadedSkills::empty();
 
         let mut tools_in_chunk: Option<Vec<String>> = None;
         Session::start(
@@ -1012,8 +842,7 @@ mod tests {
             },
         ).await.unwrap();
 
-        let list = tools_in_chunk.unwrap();
-        assert_eq!(list, vec!["read_file"]);
+        assert_eq!(tools_in_chunk.unwrap(), vec!["read_file"]);
     }
 
     #[tokio::test]
@@ -1021,10 +850,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let mut config = make_config("http://localhost");
-        // allowed_skills = Some([]) → skills system is active but nothing allowed
         config.context.allowed_skills = Some(vec![]);
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty(); // no skills loaded
+        let skills = LoadedSkills::empty();
 
         let mut skills_in_chunk: Option<Option<Vec<String>>> = None;
         Session::start(
@@ -1037,11 +865,10 @@ mod tests {
             },
         ).await.unwrap();
 
-        // skills_display = Some([]) because allowed_skills is Some
         assert!(matches!(skills_in_chunk, Some(Some(ref v)) if v.is_empty()));
     }
 
-    // ── activate_skill error paths ────────────────────────────────────────────
+    // ── activate_skill error / happy paths ────────────────────────────────────
 
     fn activate_sse_with_args(args_json: &str) -> String {
         let escaped = args_json.replace('"', "\\\"");
@@ -1056,36 +883,22 @@ mod tests {
         let _home = TempHome::new();
         let server = MockServer::start().await;
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(activate_sse_with_args("{}")))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let skills = LoadedSkills::empty();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let mut tool_results = vec![];
-        let result = session.send(
-            "test".into(), &tools, &skills,
-            &mut |c| {
-                if let OutputChunk::ToolResult { output, .. } = c {
-                    tool_results.push(output);
-                }
-            },
-        ).await.unwrap();
+        let result = session.send("test".into(), &tools, &skills, &mut |c| {
+            if let OutputChunk::ToolResult { output, .. } = c { tool_results.push(output); }
+        }).await.unwrap();
 
         assert_eq!(result, "done");
         assert!(tool_results.iter().any(|r| r.contains("missing") || r.contains("error")));
@@ -1097,37 +910,23 @@ mod tests {
         let _home = TempHome::new();
         let server = MockServer::start().await;
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200)
                 .set_body_string(activate_sse_with_args("{\"skill\":\"nonexistent\"}")))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let skills = LoadedSkills::empty();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let mut tool_results = vec![];
-        let result = session.send(
-            "test".into(), &tools, &skills,
-            &mut |c| {
-                if let OutputChunk::ToolResult { output, .. } = c {
-                    tool_results.push(output);
-                }
-            },
-        ).await.unwrap();
+        let result = session.send("test".into(), &tools, &skills, &mut |c| {
+            if let OutputChunk::ToolResult { output, .. } = c { tool_results.push(output); }
+        }).await.unwrap();
 
         assert_eq!(result, "done");
         assert!(tool_results.iter().any(|r| r.contains("nonexistent") || r.contains("not found") || r.contains("error")));
@@ -1139,46 +938,30 @@ mod tests {
         let _home = TempHome::new();
         let server = MockServer::start().await;
 
-        // Build a bundled skill: tmp/my-skill/skill.md + tmp/my-skill/guide.md
         let tmp_skills = TempDir::new().unwrap();
         let bundled_dir = tmp_skills.path().join("my-skill");
         std::fs::create_dir(&bundled_dir).unwrap();
         std::fs::write(bundled_dir.join("skill.md"), "---\nname: my-skill\n---\nBundled content").unwrap();
         std::fs::write(bundled_dir.join("guide.md"), "extra resource").unwrap();
 
-        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
-        let skills = SkillRegistry { skills: skill_list };
+        let skills = load_from_dir_pub(tmp_skills.path()).unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200)
                 .set_body_string(activate_sse_with_args("{\"skill\":\"my-skill\"}")))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("ok")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let mut tool_results = vec![];
-        session.send(
-            "activate".into(), &tools, &skills,
-            &mut |c| {
-                if let OutputChunk::ToolResult { output, .. } = c {
-                    tool_results.push(output);
-                }
-            },
-        ).await.unwrap();
+        session.send("activate".into(), &tools, &skills, &mut |c| {
+            if let OutputChunk::ToolResult { output, .. } = c { tool_results.push(output); }
+        }).await.unwrap();
 
         let combined = tool_results.join("");
         assert!(combined.contains("Skill directory:"));
@@ -1193,48 +976,32 @@ mod tests {
         let server = MockServer::start().await;
 
         let tmp_skills = TempDir::new().unwrap();
-        // Skill with empty body (frontmatter only)
         std::fs::write(tmp_skills.path().join("empty.md"), "---\nname: empty\n---\n").unwrap();
-        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
-        let skills = SkillRegistry { skills: skill_list };
+        let skills = load_from_dir_pub(tmp_skills.path()).unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200)
                 .set_body_string(activate_sse_with_args("{\"skill\":\"empty\"}")))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("ok")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let mut tool_results = vec![];
-        session.send(
-            "activate".into(), &tools, &skills,
-            &mut |c| {
-                if let OutputChunk::ToolResult { output, .. } = c {
-                    tool_results.push(output);
-                }
-            },
-        ).await.unwrap();
+        session.send("activate".into(), &tools, &skills, &mut |c| {
+            if let OutputChunk::ToolResult { output, .. } = c { tool_results.push(output); }
+        }).await.unwrap();
 
         let combined = tool_results.join("");
         assert!(combined.contains("<skill_content name=\"empty\">"));
         assert!(combined.contains("</skill_content>"));
     }
 
-    // ── SessionRegistry fallback (regular tool call) ──────────────────────────
+    // ── SessionRegistry — regular tool call fallback ──────────────────────────
 
     #[tokio::test]
     async fn session_send_regular_tool_call_uses_fallback_path() {
@@ -1250,99 +1017,49 @@ mod tests {
             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"tc1\",\"function\":{{\"name\":\"read_file\",\"arguments\":\"{{\\\"path\\\":\\\"{escaped_path}\\\"}}\"}}}}]}}}}],\"usage\":null}}\ndata: [DONE]\n"
         );
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(tool_call_sse))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .up_to_n_times(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let tools = ToolRegistry { custom_tools: vec![] };
-        let skills = SkillRegistry::empty();
-        let mut session = Session::start(
-            None, None, None, None,
-            &config, &tools, &skills,
-            &mut |_| {},
-        ).await.unwrap();
+        let skills = LoadedSkills::empty();
+        let mut session = Session::start(None, None, None, None, &config, &tools, &skills, &mut |_| {}).await.unwrap();
 
         let mut tool_results = vec![];
-        let result = session.send(
-            "read that file".into(), &tools, &skills,
-            &mut |c| {
-                if let OutputChunk::ToolResult { output, .. } = c {
-                    tool_results.push(output);
-                }
-            },
-        ).await.unwrap();
+        let result = session.send("read that file".into(), &tools, &skills, &mut |c| {
+            if let OutputChunk::ToolResult { output, .. } = c { tool_results.push(output); }
+        }).await.unwrap();
 
         assert_eq!(result, "done");
         assert!(tool_results.iter().any(|r| r.contains("tool-content")));
     }
 
-    // ── run() public function ─────────────────────────────────────────────────
+    // ── run() ─────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn run_fn_returns_model_response() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _home = TempHome::new();
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+        Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("run-result")))
-            .mount(&server)
-            .await;
+            .mount(&server).await;
 
         let config = make_config(&server.uri());
         let registry = ToolRegistry { custom_tools: vec![] };
         let mut chunks = vec![];
 
         let result = super::run(
-            "my prompt".into(),
-            None,
-            None,
-            None,
-            None,
-            &config,
-            &registry,
+            "my prompt".into(), None, None, None, None,
+            &config, &registry,
             &mut |c| chunks.push(c),
         ).await.unwrap();
 
         assert_eq!(result, "run-result");
         assert!(chunks.iter().any(|c| matches!(c, OutputChunk::SessionStart { .. })));
     }
-}
-
-// ── Single-shot entry point (used by `cooper prompt`) ────────────────────────
-
-pub async fn run(
-    prompt: String,
-    system_prompt: Option<String>,
-    active_skill: Option<String>,
-    provider_name: Option<String>,
-    model_name: Option<String>,
-    config: &ResolvedConfig,
-    registry: &ToolRegistry,
-    on_chunk: &mut dyn FnMut(OutputChunk),
-) -> Result<String> {
-    let empty_skills = SkillRegistry::empty();
-    let mut session = Session::start(
-        system_prompt,
-        active_skill,
-        provider_name,
-        model_name,
-        config,
-        registry,
-        &empty_skills,
-        on_chunk,
-    )
-    .await?;
-    session
-        .send(prompt, registry, &empty_skills, on_chunk)
-        .await
 }

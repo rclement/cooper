@@ -2,10 +2,10 @@ use crate::config::{
     API_TYPES, AgentInstructions, ApiType, ContextConfig, ModelConfig, ProviderConfig, RawConfig,
     ResolvedConfig, Scope,
 };
-use crate::output::OutputChunk;
-use crate::skills::SkillRegistry;
+use crate::skills::LoadedSkills;
 use crate::tools::{self, ToolRegistry};
-use crate::{agent, config};
+use cooper_core::OutputChunk;
+use crate::{session, config};
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use console::style;
@@ -469,7 +469,7 @@ pub async fn run() -> Result<()> {
 
             let (resolved_system, active_skill) = if let Some(skill_name) = skill {
                 let skill_registry =
-                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
+                    LoadedSkills::load_filtered(config.context.allowed_skills.as_deref())?;
                 let skill = skill_registry
                     .find(&skill_name)
                     .ok_or_else(|| anyhow!("skill '{}' not found", skill_name))?;
@@ -487,7 +487,7 @@ pub async fn run() -> Result<()> {
 
             let registry = ToolRegistry::load()?;
             let mut printer = PhasePrinter::default();
-            agent::run(
+            session::run(
                 prompt,
                 resolved_system,
                 active_skill,
@@ -968,7 +968,7 @@ pub async fn run() -> Result<()> {
                         let ctx = raw.context.get_or_insert_with(ContextConfig::default);
                         match &mut ctx.allowed_skills {
                             None => {
-                                let registry = SkillRegistry::load()?;
+                                let registry = LoadedSkills::load()?;
                                 let mut all_names: Vec<String> =
                                     registry.all().iter().map(|s| s.name.clone()).collect();
                                 all_names.retain(|n| n != &skill_name);
@@ -1013,22 +1013,19 @@ pub async fn run() -> Result<()> {
                 let config = config::load()?;
                 let registry = ToolRegistry::load()?;
                 let skill_registry =
-                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
-                if let Some(schema) = agent::activate_skill_schema(&skill_registry) {
-                    let f = &schema["function"];
-                    let name = f["name"].as_str().unwrap_or("activate_skill");
-                    let desc = f["description"].as_str().unwrap_or("");
-                    println!("{:<20}  {}", style(name).bold(), style("[meta]").dim());
-                    for line in desc.lines() {
+                    LoadedSkills::load_filtered(config.context.allowed_skills.as_deref())?;
+                if let Some(schema) = session::activate_skill_schema(&skill_registry) {
+                    println!("{:<20}  {}", style(&schema.name).bold(), style("[meta]").dim());
+                    for line in schema.description.lines() {
                         println!("  {}", line);
                     }
-                    if let Some(props) = f["parameters"]["properties"].as_object() {
+                    if let Some(props) = schema.parameters["properties"].as_object() {
                         for (pname, pval) in props {
                             let ptype = pval["type"].as_str().unwrap_or("string");
                             println!("  --{:<18} <{}>  (required)", pname, ptype);
                             if let Some(variants) = pval["enum"].as_array() {
                                 let names: Vec<&str> =
-                                    variants.iter().filter_map(|v| v.as_str()).collect();
+                                    variants.iter().filter_map(|v: &serde_json::Value| v.as_str()).collect();
                                 println!("    enum: {}", names.join(", "));
                             }
                         }
@@ -1093,19 +1090,17 @@ pub async fn run() -> Result<()> {
             SkillsCommand::List => {
                 let config = config::load()?;
                 let registry =
-                    SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
+                    LoadedSkills::load_filtered(config.context.allowed_skills.as_deref())?;
                 if registry.all().is_empty() {
                     println!("No skills found.");
                     return Ok(());
                 }
                 for skill in registry.all() {
-                    let src = display_source(&skill.source);
-                    println!(
-                        "{:<20} {}  {}",
-                        style(&skill.name).bold(),
-                        skill.description,
-                        style(format!("[{}]", src)).dim()
-                    );
+                    let src = registry
+                        .bundle_dir(&skill.name)
+                        .map(|d| format!("  {}", style(format!("[{}]", display_source(d))).dim()))
+                        .unwrap_or_default();
+                    println!("{:<20} {}{}", style(&skill.name).bold(), skill.description, src);
                 }
             }
         },
@@ -1137,10 +1132,10 @@ async fn run_chat(
         config.context.agent_instructions = Some(AgentInstructions::File(file));
     }
     let tool_registry = ToolRegistry::load()?;
-    let skill_registry = SkillRegistry::load_filtered(config.context.allowed_skills.as_deref())?;
+    let skill_registry = LoadedSkills::load_filtered(config.context.allowed_skills.as_deref())?;
 
     let mut start_printer = PhasePrinter::default();
-    let mut session = agent::Session::start(
+    let mut session = session::Session::start(
         system_prompt,
         None,
         provider,

@@ -1,7 +1,6 @@
-mod agent;
+mod session;
 mod cli;
 mod config;
-mod output;
 mod skills;
 mod tools;
 
