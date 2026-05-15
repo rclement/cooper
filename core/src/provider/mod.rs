@@ -152,6 +152,196 @@ pub fn parse_inline_tool_calls(content: &str) -> Option<Vec<ToolCall>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ThinkParser helpers ───────────────────────────────────────────────────
+
+    fn contents(chunks: &[OutputChunk]) -> Vec<String> {
+        chunks.iter().filter_map(|c| {
+            if let OutputChunk::Content { text } = c { Some(text.clone()) } else { None }
+        }).collect()
+    }
+
+    fn thinkings(chunks: &[OutputChunk]) -> Vec<String> {
+        chunks.iter().filter_map(|c| {
+            if let OutputChunk::Thinking { text } = c { Some(text.clone()) } else { None }
+        }).collect()
+    }
+
+    // ── ThinkParser ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn think_parser_plain_content() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("hello world");
+        assert_eq!(contents(&chunks), vec!["hello world"]);
+        assert!(thinkings(&chunks).is_empty());
+    }
+
+    #[test]
+    fn think_parser_empty_input() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn think_parser_full_think_block() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("<think>internal</think>answer");
+        assert_eq!(thinkings(&chunks), vec!["internal"]);
+        assert_eq!(contents(&chunks), vec!["answer"]);
+    }
+
+    #[test]
+    fn think_parser_content_before_and_after_think() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("before<think>inside</think>after");
+        assert_eq!(contents(&chunks), vec!["before", "after"]);
+        assert_eq!(thinkings(&chunks), vec!["inside"]);
+    }
+
+    #[test]
+    fn think_parser_tag_split_across_chunks() {
+        let mut p = ThinkParser::default();
+        let c1 = p.feed("<thi");
+        assert!(c1.is_empty(), "incomplete tag must not emit yet");
+        let c2 = p.feed("nk>content</think>");
+        assert_eq!(thinkings(&c2), vec!["content"]);
+        assert!(contents(&c2).is_empty());
+    }
+
+    #[test]
+    fn think_parser_unknown_tag_emitted_as_content() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("<div>hello</div>");
+        let joined: String = contents(&chunks).concat();
+        assert_eq!(joined, "<div>hello</div>");
+    }
+
+    #[test]
+    fn think_parser_flush_empty() {
+        let mut p = ThinkParser::default();
+        let _ = p.feed("plain");
+        let chunks = p.flush();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn think_parser_flush_partial_tag_outside_think() {
+        let mut p = ThinkParser::default();
+        let _ = p.feed("text<");
+        let chunks = p.flush();
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], OutputChunk::Content { text } if text == "<"));
+    }
+
+    #[test]
+    fn think_parser_flush_partial_tag_inside_think() {
+        let mut p = ThinkParser::default();
+        let _ = p.feed("<think>inside<");
+        let chunks = p.flush();
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], OutputChunk::Thinking { text } if text == "<"));
+    }
+
+    #[test]
+    fn think_parser_multiple_think_blocks() {
+        let mut p = ThinkParser::default();
+        let chunks = p.feed("<think>a</think>x<think>b</think>y");
+        assert_eq!(thinkings(&chunks), vec!["a", "b"]);
+        assert_eq!(contents(&chunks), vec!["x", "y"]);
+    }
+
+    // ── parse_inline_tool_calls ───────────────────────────────────────────────
+
+    #[test]
+    fn inline_none_when_no_marker() {
+        assert!(parse_inline_tool_calls("no tools here").is_none());
+        assert!(parse_inline_tool_calls("").is_none());
+    }
+
+    #[test]
+    fn inline_function_xml_single() {
+        let input = r#"<function=search><parameter=query>rust lang</parameter></function>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "search");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["query"], "rust lang");
+    }
+
+    #[test]
+    fn inline_function_xml_no_parameters() {
+        let input = r#"<function=ping></function>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ping");
+        assert_eq!(calls[0].arguments, "{}");
+    }
+
+    #[test]
+    fn inline_function_xml_multiple_params() {
+        let input = r#"<function=write><parameter=path>foo.txt</parameter><parameter=content>hello</parameter></function>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["path"], "foo.txt");
+        assert_eq!(args["content"], "hello");
+    }
+
+    #[test]
+    fn inline_tool_call_json_format() {
+        let input = r#"<tool_call>{"name":"run","arguments":{"cmd":"ls"}}</tool_call>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "run");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["cmd"], "ls");
+    }
+
+    #[test]
+    fn inline_tool_call_json_no_arguments_field() {
+        let input = r#"<tool_call>{"name":"ping"}</tool_call>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_eq!(calls[0].arguments, "{}");
+    }
+
+    #[test]
+    fn inline_tool_call_json_missing_name_skipped() {
+        let input = r#"<tool_call>{"foo":"bar"}</tool_call>"#;
+        assert!(parse_inline_tool_calls(input).is_none());
+    }
+
+    #[test]
+    fn inline_tool_call_json_malformed_json_skipped() {
+        let input = r#"<tool_call>not json</tool_call>"#;
+        assert!(parse_inline_tool_calls(input).is_none());
+    }
+
+    #[test]
+    fn inline_multiple_function_xml_calls() {
+        let input = concat!(
+            r#"<function=a><parameter=x>1</parameter></function>"#,
+            r#"<function=b><parameter=y>2</parameter></function>"#,
+        );
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "a");
+        assert_eq!(calls[1].name, "b");
+        assert_eq!(calls[0].id, "tc_0");
+        assert_eq!(calls[1].id, "tc_1");
+    }
+
+    #[test]
+    fn inline_ids_are_unique_per_call() {
+        let input = r#"<tool_call>{"name":"a"}</tool_call><tool_call>{"name":"b"}</tool_call>"#;
+        let calls = parse_inline_tool_calls(input).unwrap();
+        assert_ne!(calls[0].id, calls[1].id);
+    }
+}
+
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
 pub async fn call(

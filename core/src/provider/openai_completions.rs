@@ -292,3 +292,338 @@ pub async fn call(
 
     Ok((Message::new(Role::Assistant, full_content), usage))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Message, OutputChunk, Role};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ── message_to_wire ───────────────────────────────────────────────────────
+
+    #[test]
+    fn wire_tool_role() {
+        let m = Message::tool_result("id1", "result");
+        let w = message_to_wire(&m);
+        assert_eq!(w["role"], "tool");
+        assert_eq!(w["tool_call_id"], "id1");
+        assert_eq!(w["content"], "result");
+    }
+
+    #[test]
+    fn wire_assistant_with_tool_calls() {
+        let mut m = Message::new(Role::Assistant, "");
+        m.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "tc0".into(),
+            name: "search".into(),
+            arguments: r#"{"q":"x"}"#.into(),
+        }]);
+        let w = message_to_wire(&m);
+        assert_eq!(w["role"], "assistant");
+        assert!(w["content"].is_null());
+        let tcs = w["tool_calls"].as_array().unwrap();
+        assert_eq!(tcs[0]["id"], "tc0");
+        assert_eq!(tcs[0]["function"]["name"], "search");
+    }
+
+    #[test]
+    fn wire_assistant_plain() {
+        let m = Message::new(Role::Assistant, "hello");
+        let w = message_to_wire(&m);
+        assert_eq!(w["role"], "assistant");
+        assert_eq!(w["content"], "hello");
+    }
+
+    #[test]
+    fn wire_user() {
+        let m = Message::new(Role::User, "hi");
+        let w = message_to_wire(&m);
+        assert_eq!(w["role"], "user");
+        assert_eq!(w["content"], "hi");
+    }
+
+    #[test]
+    fn wire_system() {
+        let m = Message::new(Role::System, "be helpful");
+        let w = message_to_wire(&m);
+        assert_eq!(w["role"], "system");
+        assert_eq!(w["content"], "be helpful");
+    }
+
+    // ── call (streaming) ──────────────────────────────────────────────────────
+
+    fn sse(lines: &[&str]) -> String {
+        let mut s: String = lines.iter().map(|l| format!("data: {}\n", l)).collect();
+        s.push_str("data: [DONE]\n");
+        s
+    }
+
+    #[tokio::test]
+    async fn call_simple_text() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"hello"}}],"usage":null}"#,
+            r#"{"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, usage) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "hello");
+        assert!(msg.tool_calls.is_none());
+        let u = usage.unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 3);
+        assert_eq!(u.total_tokens, 13);
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Content { text } if text == "hello")));
+    }
+
+    #[tokio::test]
+    async fn call_tool_call_structured() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc0","function":{"name":"search","arguments":""}}]}}],"usage":null}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"x\"}"}}]}}],"usage":null}"#,
+            r#"{"choices":[{"delta":{}}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "search")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].id, "tc0");
+        assert_eq!(tcs[0].name, "search");
+        assert!(tcs[0].arguments.contains("q"));
+    }
+
+    #[tokio::test]
+    async fn call_reasoning_content_emitted_as_thinking() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"reasoning_content":"let me think"}}],"usage":null}"#,
+            r#"{"choices":[{"delta":{"content":"answer"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "think")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "answer");
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Thinking { text } if text == "let me think")));
+    }
+
+    #[tokio::test]
+    async fn call_reasoning_field_fallback() {
+        let server = MockServer::start().await;
+        // Some providers use "reasoning" instead of "reasoning_content"
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"reasoning":"alternative think"}}],"usage":null}"#,
+            r#"{"choices":[{"delta":{"content":"out"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let _ = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Thinking { .. })));
+    }
+
+    #[tokio::test]
+    async fn call_inline_tool_call_xml() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"<function=ping></function>"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(msg.tool_calls.is_some());
+        assert_eq!(msg.tool_calls.unwrap()[0].name, "ping");
+    }
+
+    #[tokio::test]
+    async fn call_inline_tool_call_json() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"<tool_call>{\"name\":\"run\",\"arguments\":{\"cmd\":\"ls\"}}</tool_call>"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs[0].name, "run");
+    }
+
+    #[tokio::test]
+    async fn call_think_tag_in_content_parsed() {
+        let server = MockServer::start().await;
+        // Content contains <think> tags — ThinkParser should handle it
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"<think>reasoning</think>response"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "response");
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Thinking { text } if text == "reasoning")));
+    }
+
+    #[tokio::test]
+    async fn call_empty_choices_skipped() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[],"usage":null}"#,
+            r#"{"choices":[{"delta":{"content":"ok"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "ok");
+    }
+
+    #[tokio::test]
+    async fn call_http_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Error"))
+            .mount(&server)
+            .await;
+
+        let result = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("HTTP error"));
+    }
+
+    #[tokio::test]
+    async fn call_no_usage_when_absent() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"hi"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (_, usage) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn call_content_before_inline_tool_emitted_cleanly() {
+        let server = MockServer::start().await;
+        // Preamble before the <function= marker should be emitted as content
+        let body = sse(&[
+            r#"{"choices":[{"delta":{"content":"preamble <function=ping></function>"}}],"usage":null}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let _ = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Content { text } if text == "preamble ")));
+    }
+}

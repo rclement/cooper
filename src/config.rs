@@ -240,3 +240,391 @@ pub fn load_raw_scope(scope: &Scope) -> Result<RawConfig> {
     }
     load_raw(&path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // Serialise tests that mutate HOME or cwd so they don't interfere.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempHome {
+        _dir: TempDir,
+        orig: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let orig = std::env::var("HOME").ok();
+            // SAFETY: serialised by ENV_LOCK — no concurrent env reads in these tests.
+            unsafe { std::env::set_var("HOME", dir.path()) };
+            Self { _dir: dir, orig }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            // SAFETY: serialised by ENV_LOCK.
+            unsafe {
+                match &self.orig {
+                    Some(h) => std::env::set_var("HOME", h),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    // ── expand_env_vars ───────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_no_vars() {
+        assert_eq!(expand_env_vars("plain text"), "plain text");
+    }
+
+    #[test]
+    fn expand_known_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("COOPER_TEST_VAR", "hello") };
+        let result = expand_env_vars("prefix ${COOPER_TEST_VAR} suffix");
+        unsafe { std::env::remove_var("COOPER_TEST_VAR") };
+        assert_eq!(result, "prefix hello suffix");
+    }
+
+    #[test]
+    fn expand_unknown_var_becomes_empty() {
+        let key = "COOPER_DEFINITELY_NOT_SET_XYZ123";
+        // SAFETY: key is unique to this test; ENV_LOCK not needed since we just remove.
+        let _ = unsafe { std::env::remove_var(key) };
+        let result = expand_env_vars(&format!("a ${{{}}} b", key));
+        assert_eq!(result, "a  b");
+    }
+
+    #[test]
+    fn expand_unclosed_brace_preserved() {
+        let result = expand_env_vars("hello ${unclosed");
+        assert_eq!(result, "hello ${unclosed");
+    }
+
+    #[test]
+    fn expand_multiple_vars() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe {
+            std::env::set_var("A_VAR", "foo");
+            std::env::set_var("B_VAR", "bar");
+        }
+        let result = expand_env_vars("${A_VAR}+${B_VAR}");
+        unsafe {
+            std::env::remove_var("A_VAR");
+            std::env::remove_var("B_VAR");
+        }
+        assert_eq!(result, "foo+bar");
+    }
+
+    // ── merge_context ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_context_both_none() {
+        let c = merge_context(None, None);
+        assert!(c.files.is_empty());
+        assert!(c.allowed_tools.is_none());
+    }
+
+    #[test]
+    fn merge_context_base_only() {
+        let base = ContextConfig { files: vec!["a.md".into()], ..Default::default() };
+        let c = merge_context(Some(base), None);
+        assert_eq!(c.files, vec!["a.md"]);
+    }
+
+    #[test]
+    fn merge_context_override_only() {
+        let over = ContextConfig { files: vec!["b.md".into()], ..Default::default() };
+        let c = merge_context(None, Some(over));
+        assert_eq!(c.files, vec!["b.md"]);
+    }
+
+    #[test]
+    fn merge_context_override_wins() {
+        let base = ContextConfig {
+            files: vec!["a.md".into()],
+            allowed_tools: Some(vec!["read_file".into()]),
+            ..Default::default()
+        };
+        let over = ContextConfig {
+            files: vec!["b.md".into()],
+            allowed_tools: None,
+            ..Default::default()
+        };
+        let c = merge_context(Some(base.clone()), Some(over));
+        // override has non-empty files → wins
+        assert_eq!(c.files, vec!["b.md"]);
+        // override allowed_tools is None → falls back to base
+        assert_eq!(c.allowed_tools, Some(vec!["read_file".into()]));
+    }
+
+    #[test]
+    fn merge_context_base_files_used_when_override_empty() {
+        let base = ContextConfig { files: vec!["base.md".into()], ..Default::default() };
+        let over = ContextConfig { files: vec![], ..Default::default() };
+        let c = merge_context(Some(base), Some(over));
+        assert_eq!(c.files, vec!["base.md"]);
+    }
+
+    // ── merge (RawConfig) ────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_overrides_take_precedence() {
+        let base = RawConfig {
+            system_prompt: Some("base sys".into()),
+            default_provider: Some("provider-a".into()),
+            ..Default::default()
+        };
+        let over = RawConfig {
+            system_prompt: Some("over sys".into()),
+            default_model: Some("gpt-4".into()),
+            ..Default::default()
+        };
+        let merged = merge(base, over);
+        assert_eq!(merged.system_prompt, Some("over sys".into()));
+        assert_eq!(merged.default_provider, Some("provider-a".into())); // from base
+        assert_eq!(merged.default_model, Some("gpt-4".into()));
+    }
+
+    #[test]
+    fn merge_providers_combined() {
+        let mut base_providers = HashMap::new();
+        base_providers.insert("a".to_string(), ProviderConfig {
+            base_url: "http://a".into(), api: ApiType::default(), api_key: None, models: vec![],
+        });
+        let mut over_providers = HashMap::new();
+        over_providers.insert("b".to_string(), ProviderConfig {
+            base_url: "http://b".into(), api: ApiType::default(), api_key: None, models: vec![],
+        });
+        let base = RawConfig { providers: Some(base_providers), ..Default::default() };
+        let over = RawConfig { providers: Some(over_providers), ..Default::default() };
+        let merged = merge(base, over);
+        let p = merged.providers.unwrap();
+        assert!(p.contains_key("a"));
+        assert!(p.contains_key("b"));
+    }
+
+    #[test]
+    fn merge_providers_base_none() {
+        let mut over_providers = HashMap::new();
+        over_providers.insert("x".to_string(), ProviderConfig {
+            base_url: "http://x".into(), api: ApiType::default(), api_key: None, models: vec![],
+        });
+        let base = RawConfig::default();
+        let over = RawConfig { providers: Some(over_providers), ..Default::default() };
+        let merged = merge(base, over);
+        assert!(merged.providers.unwrap().contains_key("x"));
+    }
+
+    // ── load_raw_scope ────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_raw_scope_missing_project_returns_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let raw = load_raw_scope(&Scope::Project).unwrap();
+        assert!(raw.system_prompt.is_none());
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn load_raw_scope_existing_project_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let yaml = "system_prompt: custom\n";
+        std::fs::write(tmp.path().join("cooper.yml"), yaml).unwrap();
+
+        let raw = load_raw_scope(&Scope::Project).unwrap();
+        assert_eq!(raw.system_prompt, Some("custom".into()));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    // ── save_provider + provider_exists_in_scope ──────────────────────────────
+
+    #[test]
+    fn save_and_check_provider_global() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+
+        let provider = ProviderConfig {
+            base_url: "http://localhost".into(),
+            api: ApiType::OpenaiCompletions,
+            api_key: Some("key".into()),
+            models: vec![],
+        };
+
+        assert!(!provider_exists_in_scope("myp", &Scope::Global).unwrap());
+        save_provider("myp", provider, &Scope::Global).unwrap();
+        assert!(provider_exists_in_scope("myp", &Scope::Global).unwrap());
+    }
+
+    #[test]
+    fn save_provider_idempotent_overwrites() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+
+        let p1 = ProviderConfig { base_url: "http://a".into(), api: ApiType::default(), api_key: None, models: vec![] };
+        let p2 = ProviderConfig { base_url: "http://b".into(), api: ApiType::default(), api_key: None, models: vec![] };
+        save_provider("p", p1, &Scope::Global).unwrap();
+        save_provider("p", p2, &Scope::Global).unwrap();
+
+        let raw = load_raw_scope(&Scope::Global).unwrap();
+        assert_eq!(raw.providers.unwrap()["p"].base_url, "http://b");
+    }
+
+    // ── update_config ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_config_creates_file_if_absent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+
+        update_config(&Scope::Global, |raw| {
+            raw.default_model = Some("test-model".into());
+            Ok(())
+        }).unwrap();
+
+        let raw = load_raw_scope(&Scope::Global).unwrap();
+        assert_eq!(raw.default_model, Some("test-model".into()));
+    }
+
+    #[test]
+    fn update_config_propagates_closure_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+
+        let result = update_config(&Scope::Global, |_raw| {
+            Err(anyhow::anyhow!("closure error"))
+        });
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("closure error"));
+    }
+
+    // ── load (merged) ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_falls_back_to_default_system_prompt() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp_home = TempHome::new();
+        let tmp_dir = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        // Change to a directory without a cooper.yml
+        std::env::set_current_dir(tmp_dir.path()).unwrap();
+        drop(tmp_home); // HOME is restored, but TempDir is still in scope
+
+        // Re-set HOME to a fresh empty dir so no settings.yml exists
+        let _home = TempHome::new();
+        let cfg = load().unwrap();
+        assert!(!cfg.system_prompt.is_empty());
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn load_with_global_settings_only() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let tmp_dir = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp_dir.path()).unwrap();
+
+        let settings_dir = _home._dir.path().join(".cooper");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(settings_dir.join("settings.yml"), "default_model: global-model\n").unwrap();
+
+        let cfg = load().unwrap();
+        assert_eq!(cfg.default_model, Some("global-model".into()));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn load_project_overrides_global() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let tmp_dir = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp_dir.path()).unwrap();
+
+        let settings_dir = _home._dir.path().join(".cooper");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(settings_dir.join("settings.yml"), "default_provider: global\n").unwrap();
+        std::fs::write(tmp_dir.path().join("cooper.yml"), "default_provider: project\n").unwrap();
+
+        let cfg = load().unwrap();
+        assert_eq!(cfg.default_provider, Some("project".into()));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn merge_providers_over_none_returns_base() {
+        let mut base_providers = HashMap::new();
+        base_providers.insert("base-only".to_string(), ProviderConfig {
+            base_url: "http://base".into(), api: ApiType::default(), api_key: None, models: vec![],
+        });
+        let base = RawConfig { providers: Some(base_providers), ..Default::default() };
+        let over = RawConfig::default();
+        let merged = merge(base, over);
+        assert!(merged.providers.unwrap().contains_key("base-only"));
+    }
+
+    #[test]
+    fn save_and_check_provider_project_scope() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let provider = ProviderConfig {
+            base_url: "http://project-local".into(),
+            api: ApiType::OpenaiCompletions,
+            api_key: None,
+            models: vec![],
+        };
+
+        assert!(!provider_exists_in_scope("proj-p", &Scope::Project).unwrap());
+        save_provider("proj-p", provider, &Scope::Project).unwrap();
+        assert!(provider_exists_in_scope("proj-p", &Scope::Project).unwrap());
+        assert!(tmp.path().join("cooper.yml").exists());
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn update_config_project_scope_creates_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        update_config(&Scope::Project, |raw| {
+            raw.default_model = Some("project-model".into());
+            Ok(())
+        }).unwrap();
+
+        assert!(tmp.path().join("cooper.yml").exists());
+        let raw = load_raw_scope(&Scope::Project).unwrap();
+        assert_eq!(raw.default_model, Some("project-model".into()));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+}

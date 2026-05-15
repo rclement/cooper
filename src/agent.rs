@@ -476,6 +476,848 @@ impl Session {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ApiType, ContextConfig, ModelConfig, ProviderConfig, ResolvedConfig};
+    use crate::skills::SkillRegistry;
+    use crate::tools::ToolRegistry;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempHome {
+        _dir: TempDir,
+        orig: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let orig = std::env::var("HOME").ok();
+            // SAFETY: serialised by ENV_LOCK — no concurrent env reads in these tests.
+            unsafe { std::env::set_var("HOME", dir.path()) };
+            Self { _dir: dir, orig }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            // SAFETY: serialised by ENV_LOCK.
+            unsafe {
+                match &self.orig {
+                    Some(h) => std::env::set_var("HOME", h),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    fn make_config(base_url: &str) -> ResolvedConfig {
+        let mut providers = HashMap::new();
+        providers.insert("test".to_string(), ProviderConfig {
+            base_url: base_url.to_string(),
+            api: ApiType::OpenaiCompletions,
+            api_key: Some("key".to_string()),
+            models: vec![ModelConfig { id: "gpt-test".to_string() }],
+        });
+        ResolvedConfig {
+            system_prompt: "You are helpful.".to_string(),
+            providers,
+            default_provider: Some("test".to_string()),
+            default_model: None,
+            context: ContextConfig::default(),
+        }
+    }
+
+    fn oai_text_sse(text: &str) -> String {
+        format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}],\"usage\":null}}\ndata: [DONE]\n")
+    }
+
+    // ── Session::inject_skill ─────────────────────────────────────────────────
+
+    fn dummy_session(system: &str) -> Session {
+        Session {
+            messages: vec![cooper_core::Message::new(cooper_core::Role::System, system)],
+            api_type: ApiType::OpenaiCompletions,
+            base_url: "http://localhost".into(),
+            api_key: "key".into(),
+            model: "model".into(),
+            logger: FileSessionLogger {
+                path: std::path::PathBuf::from("/dev/null"),
+                turn_start: None,
+            },
+        }
+    }
+
+    #[test]
+    fn system_prompt_returns_first_message_content() {
+        let s = dummy_session("be helpful");
+        assert_eq!(s.system_prompt(), "be helpful");
+    }
+
+    #[test]
+    fn inject_skill_appends_block() {
+        let mut s = dummy_session("base");
+        s.inject_skill("skill instructions");
+        assert!(s.system_prompt().contains("<skill-instructions>"));
+        assert!(s.system_prompt().contains("skill instructions"));
+        assert!(s.system_prompt().contains("</skill-instructions>"));
+    }
+
+    #[test]
+    fn inject_skill_replaces_existing_block() {
+        let mut s = dummy_session("base");
+        s.inject_skill("first");
+        s.inject_skill("second");
+        let prompt = s.system_prompt();
+        assert!(!prompt.contains("first"));
+        assert!(prompt.contains("second"));
+        // Only one block present
+        assert_eq!(prompt.matches("<skill-instructions>").count(), 1);
+    }
+
+    #[test]
+    fn inject_skill_empty_body_removes_block() {
+        let mut s = dummy_session("base");
+        s.inject_skill("some skill");
+        s.inject_skill("");
+        let prompt = s.system_prompt();
+        assert!(!prompt.contains("<skill-instructions>"));
+    }
+
+    #[test]
+    fn inject_skill_empty_body_no_block_is_noop() {
+        let mut s = dummy_session("base");
+        s.inject_skill(""); // no block to remove — should not panic or append
+        assert_eq!(s.system_prompt(), "base");
+    }
+
+    #[test]
+    fn inject_skill_trims_trailing_whitespace() {
+        let mut s = dummy_session("base");
+        s.inject_skill("content   \n\n");
+        let prompt = s.system_prompt();
+        // trim_end should have removed trailing whitespace before </skill-instructions>
+        assert!(!prompt.contains("content   \n\n</skill-instructions>"));
+        assert!(prompt.contains("content"));
+    }
+
+    // ── activate_skill_schema ─────────────────────────────────────────────────
+
+    #[test]
+    fn activate_skill_schema_empty_registry_returns_none() {
+        let reg = SkillRegistry::empty();
+        assert!(activate_skill_schema(&reg).is_none());
+    }
+
+    #[test]
+    fn activate_skill_schema_with_skills() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("coding.md"),
+            "---\nname: coding\ndescription: helps with code\n---\nDo code.",
+        ).unwrap();
+        let skills = crate::skills::SkillRegistry {
+            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
+        };
+        let schema = activate_skill_schema(&skills).unwrap();
+        assert_eq!(schema["function"]["name"], "activate_skill");
+        let variants = schema["function"]["parameters"]["properties"]["skill"]["enum"].as_array().unwrap();
+        assert!(variants.iter().any(|v| v == "coding"));
+    }
+
+    #[test]
+    fn activate_skill_schema_skill_with_description_formatted() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("review.md"),
+            "---\nname: review\ndescription: code review\n---\nReview.",
+        ).unwrap();
+        let skills = crate::skills::SkillRegistry {
+            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
+        };
+        let schema = activate_skill_schema(&skills).unwrap();
+        let desc = schema["function"]["description"].as_str().unwrap();
+        assert!(desc.contains("review: code review"));
+    }
+
+    #[test]
+    fn activate_skill_schema_skill_without_description() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("bare.md"), "bare content").unwrap();
+        let skills = crate::skills::SkillRegistry {
+            skills: crate::skills::load_from_dir_pub(tmp.path()).unwrap(),
+        };
+        let schema = activate_skill_schema(&skills).unwrap();
+        let desc = schema["function"]["description"].as_str().unwrap();
+        // No description means just the name, not "name: "
+        assert!(desc.contains("bare"));
+        assert!(!desc.contains("bare: "));
+    }
+
+    // ── Session::start ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_start_success() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let mut chunks = vec![];
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert!(session.system_prompt().contains("You are helpful"));
+        // SessionStart chunk emitted
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::SessionStart { .. })));
+    }
+
+    #[tokio::test]
+    async fn session_start_no_provider_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        config.default_provider = None;
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let result = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("provider"));
+    }
+
+    #[tokio::test]
+    async fn session_start_unknown_provider_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let config = make_config("http://localhost");
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let result = Session::start(
+            None, None, Some("nonexistent".into()), None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn session_start_no_model_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        // Remove model from provider
+        config.providers.get_mut("test").unwrap().models = vec![];
+        config.default_model = None;
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let result = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("model"));
+    }
+
+    // ── Session::send ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_send_returns_content() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("world")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let result = session.send("hello".into(), &tools, &skills, &mut |_| {}).await.unwrap();
+        assert_eq!(result, "world");
+    }
+
+    #[tokio::test]
+    async fn session_send_skill_activation_injects_system_prompt() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+
+        // First call returns activate_skill tool call
+        let activate_sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc0\",\"function\":{\"name\":\"activate_skill\",\"arguments\":\"{\\\"skill\\\":\\\"coding\\\"}\"}}]}}],\"usage\":null}\ndata: [DONE]\n";
+        // Second call returns final text
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(activate_sse))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("coded")))
+            .mount(&server)
+            .await;
+
+        let tmp_skills = TempDir::new().unwrap();
+        std::fs::write(tmp_skills.path().join("coding.md"), "---\nname: coding\n---\nWrite great code.").unwrap();
+        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
+        let skills = SkillRegistry { skills: skill_list };
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let result = session.send("write code".into(), &tools, &skills, &mut |_| {}).await.unwrap();
+        assert_eq!(result, "coded");
+        // Skill instructions injected into system prompt after activation
+        assert!(session.system_prompt().contains("<skill-instructions>"));
+        assert!(session.system_prompt().contains("Write great code"));
+    }
+
+    // ── inject_skill edge case ────────────────────────────────────────────────
+
+    #[test]
+    fn inject_skill_no_messages_is_noop() {
+        let mut s = Session {
+            messages: vec![],
+            api_type: ApiType::OpenaiCompletions,
+            base_url: "http://localhost".into(),
+            api_key: "key".into(),
+            model: "model".into(),
+            logger: FileSessionLogger {
+                path: std::path::PathBuf::from("/dev/null"),
+                turn_start: None,
+            },
+        };
+        s.inject_skill("should not panic");
+        assert!(s.messages.is_empty());
+    }
+
+    // ── Session::start — AgentInstructions variants ───────────────────────────
+
+    #[tokio::test]
+    async fn session_start_agent_instructions_disabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        config.context.agent_instructions =
+            Some(crate::config::AgentInstructions::Enabled(false));
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let mut chunks = vec![];
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        // instructions_entry is None → no agent-instructions block in system prompt
+        assert!(!session.system_prompt().contains("<agent-instructions>"));
+    }
+
+    #[tokio::test]
+    async fn session_start_agent_instructions_enabled_true() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        config.context.agent_instructions =
+            Some(crate::config::AgentInstructions::Enabled(true));
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        // AGENTS.md doesn't exist in temp home — should succeed without warning
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(!session.system_prompt().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_start_agent_instructions_file_exists() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        std::fs::write(tmp_cwd.path().join("CUSTOM.md"), "Custom agent instructions").unwrap();
+
+        let mut config = make_config("http://localhost");
+        config.context.agent_instructions =
+            Some(crate::config::AgentInstructions::File("CUSTOM.md".into()));
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(session.system_prompt().contains("Custom agent instructions"));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_start_agent_instructions_file_missing_warns_and_continues() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        let mut config = make_config("http://localhost");
+        config.context.agent_instructions =
+            Some(crate::config::AgentInstructions::File("nonexistent.md".into()));
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        // Should succeed despite missing file — just warns to stderr
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(!session.system_prompt().is_empty());
+        assert!(!session.system_prompt().contains("<agent-instructions>"));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    // ── Session::start — context files ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_start_context_file_included_in_system_prompt() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let tmp_ctx = TempDir::new().unwrap();
+        let ctx_file = tmp_ctx.path().join("context.md");
+        std::fs::write(&ctx_file, "important context content").unwrap();
+
+        let mut config = make_config("http://localhost");
+        config.context.files = vec![ctx_file.to_string_lossy().into_owned()];
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(session.system_prompt().contains("important context content"));
+    }
+
+    #[tokio::test]
+    async fn session_start_missing_context_file_warns_and_continues() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        config.context.files = vec!["/tmp/cooper_test_nonexistent_ctx_file.md".into()];
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        // Should succeed even with a missing context file
+        let session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(!session.system_prompt().is_empty());
+    }
+
+    // ── Session::start — model and tools overrides ────────────────────────────
+
+    #[tokio::test]
+    async fn session_start_explicit_model_name_overrides_provider() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let mut chunk_model = String::new();
+        Session::start(
+            None, None, None, Some("explicit-model".into()),
+            &config, &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::SessionStart { model, .. } = &c {
+                    chunk_model = model.clone();
+                }
+            },
+        ).await.unwrap();
+
+        assert_eq!(chunk_model, "explicit-model");
+    }
+
+    #[tokio::test]
+    async fn session_start_with_allowed_tools_restricts_list() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        config.context.allowed_tools = Some(vec!["read_file".into()]);
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+
+        let mut tools_in_chunk: Option<Vec<String>> = None;
+        Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::SessionStart { tools, .. } = c {
+                    tools_in_chunk = tools;
+                }
+            },
+        ).await.unwrap();
+
+        let list = tools_in_chunk.unwrap();
+        assert_eq!(list, vec!["read_file"]);
+    }
+
+    #[tokio::test]
+    async fn session_start_skills_display_with_allowed_skills_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let mut config = make_config("http://localhost");
+        // allowed_skills = Some([]) → skills system is active but nothing allowed
+        config.context.allowed_skills = Some(vec![]);
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty(); // no skills loaded
+
+        let mut skills_in_chunk: Option<Option<Vec<String>>> = None;
+        Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::SessionStart { skills, .. } = c {
+                    skills_in_chunk = Some(skills);
+                }
+            },
+        ).await.unwrap();
+
+        // skills_display = Some([]) because allowed_skills is Some
+        assert!(matches!(skills_in_chunk, Some(Some(ref v)) if v.is_empty()));
+    }
+
+    // ── activate_skill error paths ────────────────────────────────────────────
+
+    fn activate_sse_with_args(args_json: &str) -> String {
+        let escaped = args_json.replace('"', "\\\"");
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"tc0\",\"function\":{{\"name\":\"activate_skill\",\"arguments\":\"{escaped}\"}}}}]}}}}],\"usage\":null}}\ndata: [DONE]\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn activate_skill_missing_param_captured_as_error_result() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(activate_sse_with_args("{}")))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let mut tool_results = vec![];
+        let result = session.send(
+            "test".into(), &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::ToolResult { output, .. } = c {
+                    tool_results.push(output);
+                }
+            },
+        ).await.unwrap();
+
+        assert_eq!(result, "done");
+        assert!(tool_results.iter().any(|r| r.contains("missing") || r.contains("error")));
+    }
+
+    #[tokio::test]
+    async fn activate_skill_not_found_captured_as_error_result() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(activate_sse_with_args("{\"skill\":\"nonexistent\"}")))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let mut tool_results = vec![];
+        let result = session.send(
+            "test".into(), &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::ToolResult { output, .. } = c {
+                    tool_results.push(output);
+                }
+            },
+        ).await.unwrap();
+
+        assert_eq!(result, "done");
+        assert!(tool_results.iter().any(|r| r.contains("nonexistent") || r.contains("not found") || r.contains("error")));
+    }
+
+    #[tokio::test]
+    async fn activate_skill_bundled_skill_includes_resources() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+
+        // Build a bundled skill: tmp/my-skill/skill.md + tmp/my-skill/guide.md
+        let tmp_skills = TempDir::new().unwrap();
+        let bundled_dir = tmp_skills.path().join("my-skill");
+        std::fs::create_dir(&bundled_dir).unwrap();
+        std::fs::write(bundled_dir.join("skill.md"), "---\nname: my-skill\n---\nBundled content").unwrap();
+        std::fs::write(bundled_dir.join("guide.md"), "extra resource").unwrap();
+
+        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
+        let skills = SkillRegistry { skills: skill_list };
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(activate_sse_with_args("{\"skill\":\"my-skill\"}")))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("ok")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let mut tool_results = vec![];
+        session.send(
+            "activate".into(), &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::ToolResult { output, .. } = c {
+                    tool_results.push(output);
+                }
+            },
+        ).await.unwrap();
+
+        let combined = tool_results.join("");
+        assert!(combined.contains("Skill directory:"));
+        assert!(combined.contains("<skill_resources>"));
+        assert!(combined.contains("guide.md"));
+    }
+
+    #[tokio::test]
+    async fn activate_skill_empty_body_omits_content_section() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+
+        let tmp_skills = TempDir::new().unwrap();
+        // Skill with empty body (frontmatter only)
+        std::fs::write(tmp_skills.path().join("empty.md"), "---\nname: empty\n---\n").unwrap();
+        let skill_list = crate::skills::load_from_dir_pub(tmp_skills.path()).unwrap();
+        let skills = SkillRegistry { skills: skill_list };
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(activate_sse_with_args("{\"skill\":\"empty\"}")))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("ok")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let mut tool_results = vec![];
+        session.send(
+            "activate".into(), &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::ToolResult { output, .. } = c {
+                    tool_results.push(output);
+                }
+            },
+        ).await.unwrap();
+
+        let combined = tool_results.join("");
+        assert!(combined.contains("<skill_content name=\"empty\">"));
+        assert!(combined.contains("</skill_content>"));
+    }
+
+    // ── SessionRegistry fallback (regular tool call) ──────────────────────────
+
+    #[tokio::test]
+    async fn session_send_regular_tool_call_uses_fallback_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("data.txt");
+        std::fs::write(&file, "tool-content").unwrap();
+
+        let escaped_path = file.to_str().unwrap().replace('"', "\\\"");
+        let tool_call_sse = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"tc1\",\"function\":{{\"name\":\"read_file\",\"arguments\":\"{{\\\"path\\\":\\\"{escaped_path}\\\"}}\"}}}}]}}}}],\"usage\":null}}\ndata: [DONE]\n"
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(tool_call_sse))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("done")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let tools = ToolRegistry { custom_tools: vec![] };
+        let skills = SkillRegistry::empty();
+        let mut session = Session::start(
+            None, None, None, None,
+            &config, &tools, &skills,
+            &mut |_| {},
+        ).await.unwrap();
+
+        let mut tool_results = vec![];
+        let result = session.send(
+            "read that file".into(), &tools, &skills,
+            &mut |c| {
+                if let OutputChunk::ToolResult { output, .. } = c {
+                    tool_results.push(output);
+                }
+            },
+        ).await.unwrap();
+
+        assert_eq!(result, "done");
+        assert!(tool_results.iter().any(|r| r.contains("tool-content")));
+    }
+
+    // ── run() public function ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_fn_returns_model_response() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oai_text_sse("run-result")))
+            .mount(&server)
+            .await;
+
+        let config = make_config(&server.uri());
+        let registry = ToolRegistry { custom_tools: vec![] };
+        let mut chunks = vec![];
+
+        let result = super::run(
+            "my prompt".into(),
+            None,
+            None,
+            None,
+            None,
+            &config,
+            &registry,
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(result, "run-result");
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::SessionStart { .. })));
+    }
+}
+
 // ── Single-shot entry point (used by `cooper prompt`) ────────────────────────
 
 pub async fn run(

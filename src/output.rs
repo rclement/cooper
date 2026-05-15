@@ -36,6 +36,45 @@ pub enum OutputChunk {
     },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_thinking() {
+        let c = OutputChunk::from(cooper_core::OutputChunk::Thinking { text: "t".into() });
+        assert!(matches!(c, OutputChunk::Thinking { text } if text == "t"));
+    }
+
+    #[test]
+    fn from_content() {
+        let c = OutputChunk::from(cooper_core::OutputChunk::Content { text: "hi".into() });
+        assert!(matches!(c, OutputChunk::Content { text } if text == "hi"));
+    }
+
+    #[test]
+    fn from_tool_call() {
+        let c = OutputChunk::from(cooper_core::OutputChunk::ToolCall { name: "f".into(), args: "{}".into() });
+        assert!(matches!(c, OutputChunk::ToolCall { name, args } if name == "f" && args == "{}"));
+    }
+
+    #[test]
+    fn from_tool_result() {
+        let c = OutputChunk::from(cooper_core::OutputChunk::ToolResult { name: "f".into(), output: "ok".into() });
+        assert!(matches!(c, OutputChunk::ToolResult { name, output } if name == "f" && output == "ok"));
+    }
+
+    #[test]
+    fn from_usage() {
+        let c = OutputChunk::from(cooper_core::OutputChunk::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+        });
+        assert!(matches!(c, OutputChunk::Usage { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }));
+    }
+}
+
 impl From<cooper_core::OutputChunk> for OutputChunk {
     fn from(c: cooper_core::OutputChunk) -> Self {
         match c {

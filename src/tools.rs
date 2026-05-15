@@ -470,7 +470,7 @@ fn load_from_dir(dir: &Path) -> Result<Vec<CustomTool>> {
 // ── Tool registry ─────────────────────────────────────────────────────────────
 
 pub struct ToolRegistry {
-    custom_tools: Vec<CustomTool>,
+    pub(crate) custom_tools: Vec<CustomTool>,
 }
 
 impl ToolRegistry {
@@ -550,6 +550,761 @@ impl ToolRegistry {
 
     pub fn custom_tools(&self) -> &[CustomTool] {
         &self.custom_tools
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    // ── substitute ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn substitute_no_vars() {
+        let vars = HashMap::new();
+        assert_eq!(substitute("hello world", &vars), "hello world");
+    }
+
+    #[test]
+    fn substitute_known_var() {
+        let mut vars = HashMap::new();
+        vars.insert("NAME".to_string(), "alice".to_string());
+        assert_eq!(substitute("hello ${NAME}!", &vars), "hello alice!");
+    }
+
+    #[test]
+    fn substitute_unknown_var_preserved() {
+        let vars = HashMap::new();
+        assert_eq!(substitute("${UNKNOWN}", &vars), "${UNKNOWN}");
+    }
+
+    #[test]
+    fn substitute_unclosed_brace() {
+        let vars = HashMap::new();
+        assert_eq!(substitute("hello ${unclosed", &vars), "hello ${unclosed");
+    }
+
+    #[test]
+    fn substitute_multiple_vars() {
+        let mut vars = HashMap::new();
+        vars.insert("A".to_string(), "1".to_string());
+        vars.insert("B".to_string(), "2".to_string());
+        assert_eq!(substitute("${A}+${B}", &vars), "1+2");
+    }
+
+    // ── resolve_env_vars ──────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_env_vars_known() {
+        // SAFETY: unique key, test is isolated.
+        unsafe { std::env::set_var("COOPER_TOOLS_TEST", "resolved") };
+        let result = resolve_env_vars("val=${COOPER_TOOLS_TEST}");
+        unsafe { std::env::remove_var("COOPER_TOOLS_TEST") };
+        assert_eq!(result, "val=resolved");
+    }
+
+    #[test]
+    fn resolve_env_vars_unknown_becomes_empty() {
+        unsafe { std::env::remove_var("COOPER_TOOLS_MISSING_XYZ") };
+        let result = resolve_env_vars("${COOPER_TOOLS_MISSING_XYZ}");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn resolve_env_vars_unclosed() {
+        let result = resolve_env_vars("${abc");
+        assert_eq!(result, "${abc");
+    }
+
+    // ── oai_schema ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn oai_schema_builtin_read_file() {
+        let tool = find("read_file").unwrap();
+        let schema = oai_schema(tool);
+        assert_eq!(schema["function"]["name"], "read_file");
+        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        assert!(required.iter().any(|r| r == "path"));
+    }
+
+    #[test]
+    fn oai_schema_optional_param_not_in_required() {
+        let tool = find("list_files").unwrap();
+        let schema = oai_schema(tool);
+        // path has a default, so it's optional
+        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        assert!(!required.iter().any(|r| r == "path"));
+        // but it still appears in properties
+        let props = schema["function"]["parameters"]["properties"].as_object().unwrap();
+        assert!(props.contains_key("path"));
+    }
+
+    // ── find ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn find_existing_tool() {
+        assert!(find("list_files").is_some());
+        assert!(find("read_file").is_some());
+        assert!(find("write_file").is_some());
+        assert!(find("edit_file").is_some());
+        assert!(find("execute_command").is_some());
+    }
+
+    #[test]
+    fn find_missing_tool() {
+        assert!(find("nonexistent_tool").is_none());
+    }
+
+    // ── execute (built-ins) ───────────────────────────────────────────────────
+
+    #[test]
+    fn execute_list_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+
+        let tool = find("list_files").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), tmp.path().to_string_lossy().into_owned());
+        let result = execute(tool, &args).unwrap();
+        assert!(result.contains("a.txt"));
+        assert!(result.contains("b.txt"));
+        assert!(result.contains("subdir/"));
+    }
+
+    #[test]
+    fn execute_list_files_default_path() {
+        let tool = find("list_files").unwrap();
+        let args = HashMap::new(); // uses default "."
+        // Just ensure it doesn't error (we're in the project root during tests)
+        assert!(execute(tool, &args).is_ok());
+    }
+
+    #[test]
+    fn execute_read_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.txt");
+        std::fs::write(&path, "file content").unwrap();
+
+        let tool = find("read_file").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), path.to_string_lossy().into_owned());
+        let result = execute(tool, &args).unwrap();
+        assert_eq!(result, "file content");
+    }
+
+    #[test]
+    fn execute_read_file_missing_param_errors() {
+        let tool = find("read_file").unwrap();
+        let args = HashMap::new(); // path is required
+        let result = execute(tool, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("path"));
+    }
+
+    #[test]
+    fn execute_write_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("out.txt");
+
+        let tool = find("write_file").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), path.to_string_lossy().into_owned());
+        args.insert("content".to_string(), "written".to_string());
+        let result = execute(tool, &args).unwrap();
+        assert!(result.contains("Written"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "written");
+    }
+
+    #[test]
+    fn execute_write_file_creates_parent_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("deep").join("nested").join("file.txt");
+
+        let tool = find("write_file").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), path.to_string_lossy().into_owned());
+        args.insert("content".to_string(), "nested".to_string());
+        execute(tool, &args).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn execute_edit_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("edit.txt");
+        std::fs::write(&path, "hello world").unwrap();
+
+        let tool = find("edit_file").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), path.to_string_lossy().into_owned());
+        args.insert("old".to_string(), "world".to_string());
+        args.insert("new".to_string(), "rust".to_string());
+        let result = execute(tool, &args).unwrap();
+        assert!(result.contains("Edited"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello rust");
+    }
+
+    #[test]
+    fn execute_edit_file_pattern_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("edit.txt");
+        std::fs::write(&path, "hello").unwrap();
+
+        let tool = find("edit_file").unwrap();
+        let mut args = HashMap::new();
+        args.insert("path".to_string(), path.to_string_lossy().into_owned());
+        args.insert("old".to_string(), "NOTFOUND".to_string());
+        args.insert("new".to_string(), "x".to_string());
+        let result = execute(tool, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("pattern not found"));
+    }
+
+    #[test]
+    fn execute_command_success() {
+        let tool = find("execute_command").unwrap();
+        let mut args = HashMap::new();
+        args.insert("command".to_string(), "echo hello".to_string());
+        let result = execute(tool, &args).unwrap();
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn execute_command_captures_stderr() {
+        let tool = find("execute_command").unwrap();
+        let mut args = HashMap::new();
+        args.insert("command".to_string(), "echo error >&2".to_string());
+        let result = execute(tool, &args).unwrap();
+        assert!(result.contains("error"));
+    }
+
+    #[test]
+    fn execute_unknown_builtin_errors() {
+        let tool = Tool { name: "fake_tool", description: "", params: &[] };
+        let args = HashMap::new();
+        let result = execute(&tool, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown built-in tool"));
+    }
+
+    // ── CustomTool::execute ───────────────────────────────────────────────────
+
+    fn make_custom_tool(name: &str, command: Vec<String>, parameters: IndexMap<String, CustomToolParamDef>) -> CustomTool {
+        CustomTool {
+            def: CustomToolDef {
+                name: name.to_string(),
+                description: "test tool".to_string(),
+                parameters,
+                command: CommandSpec::Single(command),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_tool_single_command() {
+        let tool = make_custom_tool("greet", vec!["echo".into(), "hi".into()], IndexMap::new());
+        let args = HashMap::new();
+        let result = tool.execute(&args).await.unwrap();
+        assert!(result.contains("hi"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_with_param_substitution() {
+        let mut params = IndexMap::new();
+        params.insert("name".to_string(), CustomToolParamDef {
+            param_type: "string".into(),
+            required: true,
+            default: None,
+            description: None,
+        });
+        let tool = make_custom_tool("greet", vec!["echo".into(), "${name}".into()], params);
+        let mut args = HashMap::new();
+        args.insert("name".to_string(), "world".to_string());
+        let result = tool.execute(&args).await.unwrap();
+        assert!(result.contains("world"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_missing_required_param_errors() {
+        let mut params = IndexMap::new();
+        params.insert("required_param".to_string(), CustomToolParamDef {
+            param_type: "string".into(),
+            required: true,
+            default: None,
+            description: None,
+        });
+        let tool = make_custom_tool("t", vec!["echo".into()], params);
+        let result = tool.execute(&HashMap::new()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required_param"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_default_param_used() {
+        let mut params = IndexMap::new();
+        params.insert("msg".to_string(), CustomToolParamDef {
+            param_type: "string".into(),
+            required: false,
+            default: Some("default-msg".into()),
+            description: None,
+        });
+        let tool = make_custom_tool("t", vec!["echo".into(), "${msg}".into()], params);
+        let result = tool.execute(&HashMap::new()).await.unwrap();
+        assert!(result.contains("default-msg"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_pipeline() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "pipe".into(),
+                description: "pipeline".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Pipeline(vec![
+                    vec!["echo".into(), "hello world".into()],
+                    vec!["tr".into(), "a-z".into(), "A-Z".into()],
+                ]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let result = tool.execute(&HashMap::new()).await.unwrap();
+        assert!(result.contains("HELLO WORLD"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_command_failure_errors() {
+        let tool = make_custom_tool("fail", vec!["sh".into(), "-c".into(), "exit 1".into()], IndexMap::new());
+        let result = tool.execute(&HashMap::new()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exited with"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_empty_command_errors() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "empty".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec![]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let result = tool.execute(&HashMap::new()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty command"));
+    }
+
+    // ── load_from_dir (custom tools) ──────────────────────────────────────────
+
+    #[test]
+    fn load_custom_tools_from_dir_empty() {
+        let tmp = TempDir::new().unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn load_custom_tools_from_dir_nonexistent() {
+        let tools = load_from_dir(std::path::Path::new("/nonexistent/tools")).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn load_custom_tools_from_dir_yml_file() {
+        let tmp = TempDir::new().unwrap();
+        let yaml = "name: mytool\ndescription: does stuff\ncommand: [echo, hi]\n";
+        std::fs::write(tmp.path().join("mytool.yml"), yaml).unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].def.name, "mytool");
+    }
+
+    #[test]
+    fn load_custom_tools_from_dir_bundled() {
+        let tmp = TempDir::new().unwrap();
+        let tool_dir = tmp.path().join("my-tool");
+        std::fs::create_dir(&tool_dir).unwrap();
+        let yaml = "name: bundled\ndescription: bundled tool\ncommand: [echo, ok]\n";
+        std::fs::write(tool_dir.join("tool.yml"), yaml).unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].def.name, "bundled");
+    }
+
+    #[test]
+    fn load_custom_tools_dir_no_tool_yml_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("notool");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("other.yml"), "whatever").unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    // ── ToolRegistry ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn registry_all_names_includes_builtins() {
+        let reg = ToolRegistry { custom_tools: vec![] };
+        let names = reg.all_names();
+        assert!(names.contains(&"list_files".to_string()));
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"execute_command".to_string()));
+    }
+
+    #[test]
+    fn registry_all_names_includes_custom() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "my_custom".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec!["echo".into()]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let reg = ToolRegistry { custom_tools: vec![tool] };
+        assert!(reg.all_names().contains(&"my_custom".to_string()));
+    }
+
+    #[test]
+    fn registry_find_custom() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "special".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec!["echo".into()]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let reg = ToolRegistry { custom_tools: vec![tool] };
+        assert!(reg.find_custom("special").is_some());
+        assert!(reg.find_custom("nonexistent").is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_builtin() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "content").unwrap();
+        let reg = ToolRegistry { custom_tools: vec![] };
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let result = reg.execute_json("read_file", &args).await.unwrap();
+        assert_eq!(result, "content");
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_unknown_tool_errors() {
+        let reg = ToolRegistry { custom_tools: vec![] };
+        let result = reg.execute_json("totally_unknown", "{}").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_bad_args_errors() {
+        let reg = ToolRegistry { custom_tools: vec![] };
+        let result = reg.execute_json("read_file", "not json").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_non_string_value_stringified() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let reg = ToolRegistry { custom_tools: vec![] };
+        // path passed as a JSON string should work
+        let args = format!("{{\"path\": \"{}\"}}", file.to_str().unwrap());
+        let result = reg.execute_json("read_file", &args).await.unwrap();
+        assert_eq!(result, "hi");
+    }
+
+    #[test]
+    fn registry_load_errors_on_builtin_name_conflict() {
+        let tmp = TempDir::new().unwrap();
+        // Create a custom tool with a builtin name
+        let yaml = "name: read_file\ndescription: conflict\ncommand: [echo]\n";
+        std::fs::write(tmp.path().join("read_file.yml"), yaml).unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        // Simulate the conflict check from ToolRegistry::load
+        let has_conflict = tools.iter().any(|t| BUILTIN_TOOLS.iter().any(|b| b.name == t.def.name));
+        assert!(has_conflict);
+    }
+
+    #[test]
+    fn custom_tool_oai_schema() {
+        let mut params = IndexMap::new();
+        params.insert("query".to_string(), CustomToolParamDef {
+            param_type: "string".into(),
+            required: true,
+            default: None,
+            description: Some("search query".into()),
+        });
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "search".into(),
+                description: "searches".into(),
+                parameters: params,
+                command: CommandSpec::Single(vec!["echo".into()]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let schema = tool.oai_schema();
+        assert_eq!(schema["function"]["name"], "search");
+        let required = schema["function"]["parameters"]["required"].as_array().unwrap();
+        assert!(required.iter().any(|r| r == "query"));
+        assert_eq!(schema["function"]["parameters"]["properties"]["query"]["description"], "search query");
+    }
+
+    // ── ToolRegistry::custom_tools() accessor ─────────────────────────────────
+
+    #[test]
+    fn registry_custom_tools_accessor() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "acc".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec!["echo".into()]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let reg = ToolRegistry { custom_tools: vec![tool] };
+        assert_eq!(reg.custom_tools().len(), 1);
+        assert_eq!(reg.custom_tools()[0].def.name, "acc");
+    }
+
+    // ── ToolRegistry::load() ──────────────────────────────────────────────────
+
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempHome {
+        _dir: TempDir,
+        orig: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let orig = std::env::var("HOME").ok();
+            unsafe { std::env::set_var("HOME", dir.path()) };
+            Self { _dir: dir, orig }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.orig {
+                    Some(h) => std::env::set_var("HOME", h),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registry_load_no_tools_succeeds() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        let reg = ToolRegistry::load().unwrap();
+        assert!(reg.custom_tools().is_empty());
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn registry_load_global_tool_included() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        let tools_dir = _home._dir.path().join(".cooper").join("tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(
+            tools_dir.join("my_tool.yml"),
+            "name: my_tool\ndescription: test\ncommand: [echo, hi]\n",
+        ).unwrap();
+
+        let reg = ToolRegistry::load().unwrap();
+        assert!(reg.all_names().contains(&"my_tool".to_string()));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn registry_load_project_tool_overrides_global() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        let global_dir = _home._dir.path().join(".cooper").join("tools");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        std::fs::write(
+            global_dir.join("shared.yml"),
+            "name: shared\ndescription: global version\ncommand: [echo, global]\n",
+        ).unwrap();
+
+        let project_dir = tmp_cwd.path().join(".agents").join("tools");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("shared.yml"),
+            "name: shared\ndescription: project version\ncommand: [echo, project]\n",
+        ).unwrap();
+
+        let reg = ToolRegistry::load().unwrap();
+        let shared_count = reg.custom_tools().iter().filter(|t| t.def.name == "shared").count();
+        assert_eq!(shared_count, 1);
+        assert_eq!(reg.find_custom("shared").unwrap().def.description, "project version");
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn registry_all_oai_schemas_includes_custom() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "custom_schema".into(),
+                description: "custom description".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec!["echo".into()]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let reg = ToolRegistry { custom_tools: vec![tool] };
+        let schemas = reg.all_oai_schemas();
+        assert_eq!(schemas.len(), BUILTIN_TOOLS.len() + 1);
+        let custom = schemas.last().unwrap();
+        assert_eq!(custom["function"]["name"], "custom_schema");
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_dispatches_to_custom_tool() {
+        let tool = make_custom_tool("my_echo", vec!["echo".into(), "custom-output".into()], IndexMap::new());
+        let reg = ToolRegistry { custom_tools: vec![tool] };
+        let result = reg.execute_json("my_echo", "{}").await.unwrap();
+        assert!(result.contains("custom-output"));
+    }
+
+    #[tokio::test]
+    async fn registry_execute_json_integer_value_coerced_to_string() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("num.txt");
+        let reg = ToolRegistry { custom_tools: vec![] };
+        let args = serde_json::json!({
+            "path": file.to_str().unwrap(),
+            "content": 42
+        }).to_string();
+        let result = reg.execute_json("write_file", &args).await.unwrap();
+        assert!(result.contains("Written"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "42");
+    }
+
+    #[test]
+    fn load_from_dir_skips_non_yml_non_dir_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("readme.txt"), "not a tool").unwrap();
+        std::fs::write(tmp.path().join("config.json"), "{\"key\": \"val\"}").unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn registry_load_builtin_conflict_returns_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let prev = std::env::current_dir().unwrap();
+        let tmp_cwd = TempDir::new().unwrap();
+        std::env::set_current_dir(tmp_cwd.path()).unwrap();
+
+        let tools_dir = _home._dir.path().join(".cooper").join("tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        std::fs::write(
+            tools_dir.join("read_file.yml"),
+            "name: read_file\ndescription: conflict\ncommand: [echo]\n",
+        ).unwrap();
+
+        let result = ToolRegistry::load();
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("conflicts with a built-in"));
+
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    // ── load_from_dir skips invalid definitions ───────────────────────────────
+
+    #[test]
+    fn load_from_dir_skips_invalid_yaml_with_warning() {
+        let tmp = TempDir::new().unwrap();
+        // Missing required fields (name, command) — serde will reject this
+        std::fs::write(tmp.path().join("bad.yml"), "foo: bar\n").unwrap();
+        let tools = load_from_dir(tmp.path()).unwrap();
+        assert!(tools.is_empty());
+    }
+
+    // ── CustomTool env vars ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn custom_tool_env_var_injected_into_command() {
+        let mut env = HashMap::new();
+        env.insert("COOPER_TEST_GREETING".to_string(), "hello-from-env".to_string());
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "env-tool".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Single(vec![
+                    "sh".into(), "-c".into(), "echo $COOPER_TEST_GREETING".into(),
+                ]),
+                env,
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let result = tool.execute(&HashMap::new()).await.unwrap();
+        assert!(result.trim().contains("hello-from-env"));
+    }
+
+    // ── Empty pipeline ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn custom_tool_empty_pipeline_returns_empty_string() {
+        let tool = CustomTool {
+            def: CustomToolDef {
+                name: "empty-pipe".into(),
+                description: "".into(),
+                parameters: IndexMap::new(),
+                command: CommandSpec::Pipeline(vec![]),
+                env: HashMap::new(),
+            },
+            source: std::path::PathBuf::from("test.yml"),
+        };
+        let result = tool.execute(&HashMap::new()).await.unwrap();
+        assert_eq!(result, "");
     }
 }
 

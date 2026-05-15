@@ -323,3 +323,363 @@ pub async fn call(
 
     Ok((Message::new(Role::Assistant, full_content), usage))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Message, OutputChunk, Role};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ── tool_schema_to_anthropic ──────────────────────────────────────────────
+
+    #[test]
+    fn schema_conversion_with_description() {
+        let oai = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        });
+        let result = tool_schema_to_anthropic(&oai);
+        assert_eq!(result["name"], "search");
+        assert_eq!(result["description"], "Search the web");
+        assert_eq!(result["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn schema_conversion_without_description() {
+        let oai = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "ping",
+                "parameters": {"type": "object"}
+            }
+        });
+        let result = tool_schema_to_anthropic(&oai);
+        assert_eq!(result["name"], "ping");
+        assert!(result.get("description").is_none());
+    }
+
+    // ── messages_to_wire ──────────────────────────────────────────────────────
+
+    #[test]
+    fn wire_system_extracted() {
+        let messages = vec![
+            Message::new(Role::System, "be helpful"),
+            Message::new(Role::User, "hello"),
+        ];
+        let (system, wire) = messages_to_wire(&messages);
+        assert_eq!(system, Some("be helpful".to_string()));
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["role"], "user");
+    }
+
+    #[test]
+    fn wire_no_system() {
+        let messages = vec![Message::new(Role::User, "hi")];
+        let (system, wire) = messages_to_wire(&messages);
+        assert!(system.is_none());
+        assert_eq!(wire.len(), 1);
+    }
+
+    #[test]
+    fn wire_assistant_plain() {
+        let messages = vec![Message::new(Role::Assistant, "pong")];
+        let (_, wire) = messages_to_wire(&messages);
+        assert_eq!(wire[0]["role"], "assistant");
+        assert_eq!(wire[0]["content"], "pong");
+    }
+
+    #[test]
+    fn wire_assistant_with_tool_calls() {
+        let mut msg = Message::new(Role::Assistant, "");
+        msg.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "tc1".into(),
+            name: "search".into(),
+            arguments: r#"{"q":"hi"}"#.into(),
+        }]);
+        let (_, wire) = messages_to_wire(&[msg]);
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_use");
+        assert_eq!(content[0]["id"], "tc1");
+        assert_eq!(content[0]["name"], "search");
+        assert_eq!(content[0]["input"]["q"], "hi");
+    }
+
+    #[test]
+    fn wire_tool_results_collapsed_into_user_message() {
+        let messages = vec![
+            Message::tool_result("tc1", "result A"),
+            Message::tool_result("tc2", "result B"),
+        ];
+        let (_, wire) = messages_to_wire(&messages);
+        // Both results collapse into a single user message
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["role"], "user");
+        let content = wire[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "tc1");
+        assert_eq!(content[1]["tool_use_id"], "tc2");
+    }
+
+    #[test]
+    fn wire_tool_result_missing_id_uses_empty_string() {
+        let mut msg = Message::new(Role::Tool, "output");
+        msg.tool_call_id = None;
+        let (_, wire) = messages_to_wire(&[msg]);
+        let content = &wire[0]["content"][0];
+        assert_eq!(content["tool_use_id"], "");
+    }
+
+    // ── call (streaming) with mock server ────────────────────────────────────
+
+    fn sse(lines: &[&str]) -> String {
+        lines.iter().map(|l| format!("data: {}\n", l)).collect::<Vec<_>>().join("")
+    }
+
+    #[tokio::test]
+    async fn call_simple_text_response() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_delta","usage":{"output_tokens":3}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, usage) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "hello");
+        assert!(msg.tool_calls.is_none());
+        let u = usage.unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 3);
+        assert_eq!(u.total_tokens, 13);
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Content { text } if text == "hello")));
+    }
+
+    #[tokio::test]
+    async fn call_tool_use_response() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":5}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"search"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_delta","usage":{"output_tokens":20}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "search")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].id, "toolu_1");
+        assert_eq!(tcs[0].name, "search");
+        assert!(tcs[0].arguments.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn call_thinking_block() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":5}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"my reasoning"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"text"}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+            r#"{"type":"message_delta","usage":{"output_tokens":10}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "think")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "answer");
+        assert!(chunks.iter().any(|c| matches!(c, OutputChunk::Thinking { text } if text == "my reasoning")));
+    }
+
+    #[tokio::test]
+    async fn call_api_error_event() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"error","error":{"message":"rate limit exceeded"}}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let result = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("rate limit exceeded"));
+    }
+
+    #[tokio::test]
+    async fn call_http_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let result = call(
+            &server.uri(), "bad-key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("HTTP error"));
+    }
+
+    #[tokio::test]
+    async fn call_no_usage_when_tokens_zero() {
+        let server = MockServer::start().await;
+        // No message_start (no input tokens), no message_delta (no output tokens)
+        let body = sse(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (_, usage) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert!(usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn call_skips_non_data_lines() {
+        let server = MockServer::start().await;
+        // Mix in event: lines and blank lines — should be ignored
+        let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\ndata: {\"type\":\"message_stop\"}\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "ok");
+    }
+
+    #[tokio::test]
+    async fn call_ping_event_ignored() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"ping"}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pong"}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let (msg, _) = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |_| {},
+        ).await.unwrap();
+
+        assert_eq!(msg.content, "pong");
+    }
+
+    #[tokio::test]
+    async fn call_empty_text_delta_not_emitted() {
+        let server = MockServer::start().await;
+        let body = sse(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"real"}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let mut chunks = vec![];
+        let _ = call(
+            &server.uri(), "key", "model",
+            vec![Message::new(Role::User, "hi")],
+            &[],
+            &mut |c| chunks.push(c),
+        ).await.unwrap();
+
+        let texts: Vec<_> = chunks.iter().filter_map(|c| {
+            if let OutputChunk::Content { text } = c { Some(text.as_str()) } else { None }
+        }).collect();
+        assert!(!texts.contains(&""));
+    }
+}
