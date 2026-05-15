@@ -1,5 +1,5 @@
 use crate::provider;
-use crate::types::{Message, OutputChunk, Role, Usage};
+use crate::types::{ApiType, Message, OutputChunk, Role, Usage};
 use anyhow::{Result, anyhow};
 
 #[allow(async_fn_in_trait)]
@@ -21,6 +21,7 @@ const MAX_TURNS: usize = 20;
 /// The caller must push the user message before calling this.
 pub async fn run_turn(
     messages: &mut Vec<Message>,
+    api_type: &ApiType,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -44,6 +45,7 @@ pub async fn run_turn(
         };
 
         let (response, usage) = provider::call(
+            api_type,
             base_url,
             api_key,
             model,
@@ -107,6 +109,7 @@ pub async fn run_turn(
 pub async fn run(
     prompt: String,
     system_prompt: String,
+    api_type: &ApiType,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -120,6 +123,7 @@ pub async fn run(
     ];
     run_turn(
         &mut messages,
+        api_type,
         base_url,
         api_key,
         model,

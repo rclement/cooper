@@ -1,5 +1,5 @@
 use crate::config::{API_TYPES, AgentInstructions, ApiType, ModelConfig, ProviderConfig, Scope};
-use crate::providers::OutputChunk;
+use crate::output::OutputChunk;
 use crate::skills::SkillRegistry;
 use crate::tools::{self, ToolRegistry};
 use crate::{agent, config};

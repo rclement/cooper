@@ -1,7 +1,7 @@
 mod agent;
 mod cli;
 mod config;
-mod providers;
+mod output;
 mod skills;
 mod tools;
 

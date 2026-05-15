@@ -1,9 +1,9 @@
 use crate::config::{AgentInstructions, ResolvedConfig};
-use crate::providers::OutputChunk;
+use crate::output::OutputChunk;
 use crate::tools::ToolRegistry;
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use cooper_core::{Message, Role, SessionLogger, Usage};
+use cooper_core::{ApiType, Message, Role, SessionLogger, Usage};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
@@ -101,6 +101,7 @@ impl SessionLogger for FileSessionLogger {
 
 pub struct Session {
     messages: Vec<Message>,
+    api_type: ApiType,
     base_url: String,
     api_key: String,
     model: String,
@@ -209,6 +210,7 @@ impl Session {
 
         Ok(Session {
             messages: vec![Message::new(Role::System, system)],
+            api_type: provider.api.clone(),
             base_url: provider.base_url.clone(),
             api_key: provider.api_key.clone().unwrap_or_default(),
             model,
@@ -230,6 +232,7 @@ impl Session {
         let mut wrapped = |c: cooper_core::OutputChunk| on_chunk(OutputChunk::from(c));
         cooper_core::agent::run_turn(
             &mut self.messages,
+            &self.api_type,
             &self.base_url,
             &self.api_key,
             &self.model,

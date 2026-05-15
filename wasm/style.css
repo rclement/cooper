@@ -104,7 +104,8 @@ header {
 }
 
 .field-row input,
-.field-row textarea {
+.field-row textarea,
+.field-row select {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
@@ -116,7 +117,8 @@ header {
   transition: border-color 0.15s;
 }
 .field-row input:focus,
-.field-row textarea:focus { outline: none; border-color: var(--accent); }
+.field-row textarea:focus,
+.field-row select:focus { outline: none; border-color: var(--accent); }
 .field-row textarea { resize: vertical; min-height: 52px; }
 
 .settings-footer { display: flex; justify-content: flex-end; margin-top: 4px; }

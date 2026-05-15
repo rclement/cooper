@@ -1,4 +1,39 @@
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiType {
+    #[default]
+    OpenaiCompletions,
+    AnthropicMessages,
+}
+
+impl fmt::Display for ApiType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiType::OpenaiCompletions => write!(f, "openai-completions"),
+            ApiType::AnthropicMessages => write!(f, "anthropic-messages"),
+        }
+    }
+}
+
+impl FromStr for ApiType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "openai-completions" => Ok(ApiType::OpenaiCompletions),
+            "anthropic-messages" => Ok(ApiType::AnthropicMessages),
+            _ => Err(anyhow!(
+                "unknown API type '{}'; supported: openai-completions, anthropic-messages",
+                s
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

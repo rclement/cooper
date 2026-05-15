@@ -1,40 +1,11 @@
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::path::PathBuf;
-use std::str::FromStr;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApiType {
-    #[default]
-    OpenaiCompletions,
-}
+pub use cooper_core::ApiType;
 
-impl fmt::Display for ApiType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApiType::OpenaiCompletions => write!(f, "openai-completions"),
-        }
-    }
-}
-
-impl FromStr for ApiType {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "openai-completions" => Ok(ApiType::OpenaiCompletions),
-            _ => Err(anyhow!(
-                "unknown API type '{}'; supported: openai-completions",
-                s
-            )),
-        }
-    }
-}
-
-pub const API_TYPES: &[&str] = &["openai-completions"];
+pub const API_TYPES: &[&str] = &["openai-completions", "anthropic-messages"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelConfig {
@@ -111,9 +82,30 @@ fn scope_path(scope: &Scope) -> Result<PathBuf> {
     }
 }
 
+/// Expands `${VAR_NAME}` placeholders using the current process environment.
+/// Unknown variables are replaced with an empty string.
+fn expand_env_vars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(dollar) = rest.find("${") {
+        out.push_str(&rest[..dollar]);
+        rest = &rest[dollar + 2..];
+        if let Some(close) = rest.find('}') {
+            let var = &rest[..close];
+            out.push_str(&std::env::var(var).unwrap_or_default());
+            rest = &rest[close + 1..];
+        } else {
+            out.push_str("${");
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn load_raw(path: &PathBuf) -> Result<RawConfig> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let content = expand_env_vars(&content);
     serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))
 }
 

@@ -1,11 +1,12 @@
 use crate::session_logger::WasmSessionLogger;
 use crate::tools::ToolRegistry;
 use anyhow::Result;
-use cooper_core::OutputChunk;
+use cooper_core::{ApiType, OutputChunk};
 
 pub async fn run(
     prompt: String,
     system_prompt: String,
+    api_type: ApiType,
     base_url: String,
     api_key: String,
     model: String,
@@ -16,6 +17,7 @@ pub async fn run(
     cooper_core::agent::run(
         prompt,
         system_prompt,
+        &api_type,
         &base_url,
         &api_key,
         &model,

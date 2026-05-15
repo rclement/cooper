@@ -24,6 +24,13 @@
           <input id="base-url" type="text" placeholder="http://localhost:11434/v1" spellcheck="false" autocomplete="off">
         </div>
         <div class="field-row">
+          <label for="api-type">API Type</label>
+          <select id="api-type">
+            <option value="openai-completions">OpenAI Completions</option>
+            <option value="anthropic-messages">Anthropic Messages</option>
+          </select>
+        </div>
+        <div class="field-row">
           <label for="api-key">API Key</label>
           <input id="api-key" type="password" placeholder="ollama" autocomplete="off">
         </div>

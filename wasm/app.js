@@ -26,6 +26,7 @@ function setReady(ready) {
 const CONFIG_KEY = 'cooper-config';
 const DEFAULTS = {
   base_url:      'http://localhost:11434/v1',
+  api:           'openai-completions',
   api_key:       'ollama',
   model:         'qwen3:latest',
   system_prompt: 'You are a helpful AI assistant.',
@@ -43,6 +44,7 @@ function loadConfig() {
 function saveConfig() {
   const cfg = {
     base_url:      document.getElementById('base-url').value.trim(),
+    api:           document.getElementById('api-type').value,
     api_key:       document.getElementById('api-key').value,
     model:         document.getElementById('model').value.trim(),
     system_prompt: document.getElementById('system-prompt').value,
@@ -54,6 +56,7 @@ function saveConfig() {
 function populateSettings() {
   const cfg = loadConfig();
   document.getElementById('base-url').value      = cfg.base_url;
+  document.getElementById('api-type').value      = cfg.api;
   document.getElementById('api-key').value       = cfg.api_key;
   document.getElementById('model').value         = cfg.model;
   document.getElementById('system-prompt').value = cfg.system_prompt;

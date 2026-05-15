@@ -1,4 +1,4 @@
-use cooper_core::OutputChunk;
+use cooper_core::{ApiType, OutputChunk};
 use wasm_bindgen::prelude::*;
 
 mod agent;
@@ -14,6 +14,7 @@ pub fn start() {
 /// `run_prompt` which returns a JS Promise and streams chunks via a callback.
 #[wasm_bindgen]
 pub struct CooperAgent {
+    api_type: ApiType,
     base_url: String,
     api_key: String,
     model: String,
@@ -22,13 +23,20 @@ pub struct CooperAgent {
 
 #[wasm_bindgen]
 impl CooperAgent {
-    /// `config_json` fields: `base_url`, `api_key`, `model`, `system_prompt`
+    /// `config_json` fields: `base_url`, `api_key`, `model`, `system_prompt`,
+    /// and optionally `api` (`"openai-completions"` or `"anthropic-messages"`).
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str) -> Result<CooperAgent, JsValue> {
         let cfg: serde_json::Value =
             serde_json::from_str(config_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
+        let api_type = cfg["api"]
+            .as_str()
+            .and_then(|s| s.parse::<ApiType>().ok())
+            .unwrap_or_default();
+
         Ok(CooperAgent {
+            api_type,
             base_url: cfg["base_url"].as_str().unwrap_or("").to_string(),
             api_key: cfg["api_key"].as_str().unwrap_or("").to_string(),
             model: cfg["model"].as_str().unwrap_or("").to_string(),
@@ -50,6 +58,7 @@ impl CooperAgent {
     /// Returns a Promise that resolves to the final assistant text, or rejects
     /// with an error string.
     pub fn run_prompt(&self, prompt: String, on_chunk: js_sys::Function) -> js_sys::Promise {
+        let api_type = self.api_type.clone();
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let model = self.model.clone();
@@ -61,10 +70,18 @@ impl CooperAgent {
                 let _ = on_chunk.call1(&JsValue::UNDEFINED, &JsValue::from_str(&json));
             };
 
-            agent::run(prompt, system_prompt, base_url, api_key, model, &mut cb)
-                .await
-                .map(|s| JsValue::from_str(&s))
-                .map_err(|e| JsValue::from_str(&e.to_string()))
+            agent::run(
+                prompt,
+                system_prompt,
+                api_type,
+                base_url,
+                api_key,
+                model,
+                &mut cb,
+            )
+            .await
+            .map(|s| JsValue::from_str(&s))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
         })
     }
 }
