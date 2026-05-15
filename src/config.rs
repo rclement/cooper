@@ -207,3 +207,36 @@ pub fn save_provider(name: &str, provider: ProviderConfig, scope: &Scope) -> Res
     let content = serde_yaml::to_string(&raw).context("serializing config")?;
     std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
 }
+
+fn ensure_config_exists(_scope: &Scope, path: &PathBuf) -> Result<()> {
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let content = serde_yaml::to_string(&RawConfig::default())?;
+        std::fs::write(path, content)?;
+    }
+    Ok(())
+}
+
+/// Read-modify-write a config file for the given scope, creating it if absent.
+pub fn update_config<F>(scope: &Scope, f: F) -> Result<()>
+where
+    F: FnOnce(&mut RawConfig) -> Result<()>,
+{
+    let path = scope_path(scope)?;
+    ensure_config_exists(scope, &path)?;
+    let mut raw = load_raw(&path)?;
+    f(&mut raw)?;
+    let content = serde_yaml::to_string(&raw).context("serializing config")?;
+    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Load the raw (non-merged) config for a specific scope; returns default if the file is absent.
+pub fn load_raw_scope(scope: &Scope) -> Result<RawConfig> {
+    let path = scope_path(scope)?;
+    if !path.exists() {
+        return Ok(RawConfig::default());
+    }
+    load_raw(&path)
+}
