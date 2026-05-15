@@ -283,7 +283,11 @@ pub async fn run() -> Result<()> {
                     }
                     println!();
                 }
+                let allowed_tools = config.context.allowed_tools.as_deref();
                 for tool in tools::BUILTIN_TOOLS {
+                    if allowed_tools.is_some_and(|a| !a.iter().any(|n| n == tool.name)) {
+                        continue;
+                    }
                     println!(
                         "{:<20} {}  {}",
                         style(tool.name).bold(),
@@ -300,6 +304,9 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 for tool in registry.custom_tools() {
+                    if allowed_tools.is_some_and(|a| !a.iter().any(|n| n == &tool.def.name)) {
+                        continue;
+                    }
                     let src = display_source(&tool.source);
                     println!(
                         "{:<20} {}  {}",
