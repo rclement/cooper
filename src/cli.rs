@@ -21,7 +21,7 @@ impl PrintHandler {
     }
 }
 
-impl agent::ChunkHandler for PrintHandler {
+impl agent::AgentEventsHandler for PrintHandler {
     fn on_chunk(&self, chunk: &agent::DeltaChunk) {
         if let Some(t) = &chunk.text {
             if self.reasoning.load(Ordering::Relaxed) {
