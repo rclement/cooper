@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentEventsHandler, DeltaChunk, FinishReason, Message, ToolCall, Usage};
+use crate::agent::{AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall, Usage};
 use crate::providers::Provider;
 use crate::tools::{ToolParameterTypeSchema, ToolSchema};
 
@@ -319,7 +319,7 @@ async fn process_stream(
                     if let Some(content) = &choice.delta.content {
                         if !content.is_empty() {
                             result.text_buf.push_str(content);
-                            handler.on_chunk(&DeltaChunk {
+                            handler.on_chunk(&AgentMessageChunk {
                                 text: Some(content.clone()),
                                 reasoning: None,
                             });
@@ -334,7 +334,7 @@ async fn process_stream(
                     if let Some(reasoning) = thinking {
                         if !reasoning.is_empty() {
                             result.reasoning_buf.push_str(reasoning);
-                            handler.on_chunk(&DeltaChunk {
+                            handler.on_chunk(&AgentMessageChunk {
                                 text: None,
                                 reasoning: Some(reasoning.to_string()),
                             });
