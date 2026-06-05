@@ -75,7 +75,7 @@ pub struct DeltaChunk {
     pub reasoning: Option<String>,
 }
 
-pub trait ChunkHandler: Send + Sync {
+pub trait AgentEventsHandler: Send + Sync {
     fn on_chunk(&self, chunk: &DeltaChunk);
     fn on_complete(&self, _usage: &Usage) {}
     fn on_tool_call(&self, _tool_call: &ToolCall) {}
@@ -88,7 +88,7 @@ pub async fn agent_loop_stream(
     user_prompt: &str,
     tool_registry: &HashMap<String, Box<dyn tools::Tool>>,
     provider: &dyn Provider,
-    handler: &dyn ChunkHandler,
+    handler: &dyn AgentEventsHandler,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 

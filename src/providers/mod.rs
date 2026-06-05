@@ -11,6 +11,6 @@ pub trait Provider {
         &self,
         messages: &[agent::Message],
         tools: &[tools::ToolSchema],
-        handler: &dyn agent::ChunkHandler,
+        handler: &dyn agent::AgentEventsHandler,
     ) -> Result<(agent::Message, agent::FinishReason), Box<dyn std::error::Error>>;
 }

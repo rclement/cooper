@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{ChunkHandler, DeltaChunk, FinishReason, Message, ToolCall, Usage};
+use crate::agent::{AgentEventsHandler, DeltaChunk, FinishReason, Message, ToolCall, Usage};
 use crate::providers::Provider;
 use crate::tools::{ToolParameterTypeSchema, ToolSchema};
 
@@ -263,7 +263,7 @@ struct StreamResult {
 
 async fn process_stream(
     response: reqwest::Response,
-    handler: &dyn ChunkHandler,
+    handler: &dyn AgentEventsHandler,
 ) -> Result<StreamResult, Box<dyn std::error::Error>> {
     let mut stream = response.bytes_stream();
     let mut line_buf = String::new();
@@ -382,7 +382,7 @@ impl Provider for OpenAICompletionsAPI {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-        handler: &dyn ChunkHandler,
+        handler: &dyn AgentEventsHandler,
     ) -> Result<(Message, FinishReason), Box<dyn std::error::Error>> {
         let request = ApiCompletionRequest {
             model: self.model.clone(),
