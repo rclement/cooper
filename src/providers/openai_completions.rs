@@ -5,11 +5,9 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{
-    ChunkHandler, DeltaChunk, FinishReason, Message, ToolCall, ToolParameterTypeSchema, ToolSchema,
-    Usage,
-};
+use crate::agent::{ChunkHandler, DeltaChunk, FinishReason, Message, ToolCall, Usage};
 use crate::providers::Provider;
+use crate::tools::{ToolParameterTypeSchema, ToolSchema};
 
 /// === utility functions === ///
 

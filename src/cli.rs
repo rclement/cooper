@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,6 +7,7 @@ use clap::Parser;
 use crate::agent;
 use crate::config;
 use crate::providers;
+use crate::tools;
 
 struct PrintHandler {
     reasoning: AtomicBool,
@@ -123,9 +125,19 @@ async fn prompt_cmd(text: String, provider_name: Option<String>, model_name: Opt
         }
     };
 
+    let builtin_tools: Vec<Box<dyn tools::Tool>> = vec![
+        Box::new(tools::ListFilesTool),
+        Box::new(tools::ReadFileTool),
+        Box::new(tools::ExecCmdTool),
+    ];
+    let mut tool_registry: HashMap<String, Box<dyn tools::Tool>> = HashMap::new();
+    for tool in builtin_tools {
+        tool_registry.insert(tool.schema().name.clone(), tool);
+    }
+
     let chunk_handler = PrintHandler::new();
 
-    match agent::agent_loop_stream(&text, provider.as_ref(), &chunk_handler).await {
+    match agent::agent_loop_stream(&text, &tool_registry, provider.as_ref(), &chunk_handler).await {
         Ok(_) => {}
         Err(e) => {
             eprintln!("error: {e}");
