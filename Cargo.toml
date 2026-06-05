@@ -1,3 +1,17 @@
-[workspace]
-members = ["src/core", "src/desktop", "src/web"]
-resolver = "2"
+[package]
+name = "agent-cooper"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+askama = { version = "0.16.0", features = ["code-in-doc"] }
+async-trait = "0.1.89"
+chrono = "0.4.44"
+clap = { version = "4.6.1", features = ["derive"] }
+dirs = "6.0.0"
+futures-util = "0.3.32"
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_yaml = "0.9.34"
+tokio = { version = "1.52.3", features = ["full"] }
