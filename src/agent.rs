@@ -70,13 +70,13 @@ pub struct Usage {
 
 /// === agent event handler === ///
 
-pub struct DeltaChunk {
+pub struct AgentMessageChunk {
     pub text: Option<String>,
     pub reasoning: Option<String>,
 }
 
 pub trait AgentEventsHandler: Send + Sync {
-    fn on_chunk(&self, chunk: &DeltaChunk);
+    fn on_chunk(&self, chunk: &AgentMessageChunk);
     fn on_complete(&self, _usage: &Usage) {}
     fn on_tool_call(&self, _tool_call: &ToolCall) {}
     fn on_tool_result(&self, _tool_result: &Result<String, String>) {}
