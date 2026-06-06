@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use askama::Template;
 
 use crate::providers::Provider;
-use crate::providers::openai_completions::OpenAICompletionsAPI;
 use crate::tools;
 
 /// === system prompt === ///
@@ -17,6 +16,14 @@ use crate::tools;
 /// </agent-instructions>
 /// {% endif %}
 ///
+/// <context>
+/// {% for (path, content) in context_files %}
+/// <file path="{{ path }}">
+/// {{ content }}
+/// </file>
+/// {% endfor %}
+/// </context>
+///
 /// Current date: {{ current_date }}
 /// Current time: {{ current_time }}
 /// Current working directory: {{ current_working_dir }}
@@ -25,15 +32,20 @@ use crate::tools;
 #[template(ext = "txt", in_doc = true)]
 struct SystemPromptTemplate {
     agent_instructions: Option<String>,
+    context_files: HashMap<String, String>,
     current_date: String,
     current_time: String,
     current_working_dir: String,
 }
 
-fn build_system_prompt(agent_instructions: Option<String>) -> Result<String, askama::Error> {
+fn build_system_prompt(
+    agent_instructions: Option<String>,
+    context_files: &HashMap<String, String>,
+) -> Result<String, askama::Error> {
     let now = chrono::Local::now();
     let template = SystemPromptTemplate {
         agent_instructions: agent_instructions,
+        context_files: context_files.clone(),
         current_date: now.format("%Y-%m-%d").to_string(),
         current_time: now.format("%H:%M:%S %z").to_string(),
         current_working_dir: std::env::current_dir()?.display().to_string(),
@@ -96,13 +108,14 @@ pub trait AgentEventsHandler: Send + Sync {
 pub async fn agent_loop_stream(
     user_prompt: &str,
     agent_instructions: Option<String>,
+    context_files: &HashMap<String, String>,
     tool_registry: &HashMap<String, Box<dyn tools::Tool>>,
     provider: &dyn Provider,
     handler: &dyn AgentEventsHandler,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt = build_system_prompt(agent_instructions)?;
+    let system_prompt = build_system_prompt(agent_instructions, context_files)?;
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),

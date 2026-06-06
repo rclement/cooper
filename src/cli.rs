@@ -83,6 +83,9 @@ enum Command {
         /// Agent instructions filepath
         #[arg(long, short = 'i')]
         agent_instructions: Option<String>,
+        /// Additional context files
+        #[arg(long, short = 'c', num_args = 0..)]
+        context_file: Vec<String>,
     },
 }
 
@@ -91,6 +94,7 @@ async fn prompt_cmd(
     provider_name: Option<String>,
     model_name: Option<String>,
     agent_instructions: Option<String>,
+    context_files: Vec<String>,
 ) {
     let config = match config::load() {
         Ok(c) => c,
@@ -135,16 +139,27 @@ async fn prompt_cmd(
     };
 
     let agent_instructions_content = if let Some(path) = agent_instructions {
-        match std::fs::read_to_string(path) {
+        match std::fs::read_to_string(&path) {
             Ok(contents) => Some(contents),
             Err(e) => {
-                eprintln!("failed to read agent instructions file: {e}");
+                eprintln!("failed to read agent instructions file '{path}': {e}");
                 std::process::exit(1);
             }
         }
     } else {
         None
     };
+
+    let context_files_content: HashMap<String, String> = context_files
+        .iter()
+        .filter_map(|path| match std::fs::read_to_string(&path) {
+            Ok(contents) => Some((path.clone(), contents)),
+            Err(e) => {
+                eprintln!("failed to read context file '{path}': {e}");
+                None
+            }
+        })
+        .collect();
 
     let builtin_tools: Vec<Box<dyn tools::Tool>> = vec![
         Box::new(tools::ListFilesTool),
@@ -158,7 +173,16 @@ async fn prompt_cmd(
 
     let chunk_handler = PrintHandler::new();
 
-    match agent::agent_loop_stream(&text, agent_instructions_content, &tool_registry, provider.as_ref(), &chunk_handler).await {
+    match agent::agent_loop_stream(
+        &text,
+        agent_instructions_content,
+        &context_files_content,
+        &tool_registry,
+        provider.as_ref(),
+        &chunk_handler,
+    )
+    .await
+    {
         Ok(_) => {}
         Err(e) => {
             eprintln!("error: {e}");
@@ -176,6 +200,7 @@ pub async fn run() {
             provider,
             model,
             agent_instructions,
-        } => prompt_cmd(text, provider, model, agent_instructions).await,
+            context_file,
+        } => prompt_cmd(text, provider, model, agent_instructions, context_file).await,
     }
 }
