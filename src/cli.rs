@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
@@ -79,10 +80,18 @@ enum Command {
         /// Model name
         #[arg(long, short = 'm')]
         model: Option<String>,
+        /// Agent instructions filepath
+        #[arg(long, short = 'i')]
+        agent_instructions: Option<String>,
     },
 }
 
-async fn prompt_cmd(text: String, provider_name: Option<String>, model_name: Option<String>) {
+async fn prompt_cmd(
+    text: String,
+    provider_name: Option<String>,
+    model_name: Option<String>,
+    agent_instructions: Option<String>,
+) {
     let config = match config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -125,6 +134,18 @@ async fn prompt_cmd(text: String, provider_name: Option<String>, model_name: Opt
         }
     };
 
+    let agent_instructions_content = if let Some(path) = agent_instructions {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => Some(contents),
+            Err(e) => {
+                eprintln!("failed to read agent instructions file: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     let builtin_tools: Vec<Box<dyn tools::Tool>> = vec![
         Box::new(tools::ListFilesTool),
         Box::new(tools::ReadFileTool),
@@ -137,7 +158,7 @@ async fn prompt_cmd(text: String, provider_name: Option<String>, model_name: Opt
 
     let chunk_handler = PrintHandler::new();
 
-    match agent::agent_loop_stream(&text, &tool_registry, provider.as_ref(), &chunk_handler).await {
+    match agent::agent_loop_stream(&text, agent_instructions_content, &tool_registry, provider.as_ref(), &chunk_handler).await {
         Ok(_) => {}
         Err(e) => {
             eprintln!("error: {e}");
@@ -154,6 +175,7 @@ pub async fn run() {
             text,
             provider,
             model,
-        } => prompt_cmd(text, provider, model).await,
+            agent_instructions,
+        } => prompt_cmd(text, provider, model, agent_instructions).await,
     }
 }

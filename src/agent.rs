@@ -3,12 +3,19 @@ use std::collections::HashMap;
 use askama::Template;
 
 use crate::providers::Provider;
+use crate::providers::openai_completions::OpenAICompletionsAPI;
 use crate::tools;
 
 /// === system prompt === ///
 
 /// ```askama
 /// You are agent Cooper, a special AI agent harness.
+///
+/// {% if let Some(agent_instructions) = agent_instructions %}
+/// <agent-instructions>
+/// {{ agent_instructions }}
+/// </agent-instructions>
+/// {% endif %}
 ///
 /// Current date: {{ current_date }}
 /// Current time: {{ current_time }}
@@ -17,14 +24,16 @@ use crate::tools;
 #[derive(askama::Template)]
 #[template(ext = "txt", in_doc = true)]
 struct SystemPromptTemplate {
+    agent_instructions: Option<String>,
     current_date: String,
     current_time: String,
     current_working_dir: String,
 }
 
-fn build_system_prompt() -> Result<String, askama::Error> {
+fn build_system_prompt(agent_instructions: Option<String>) -> Result<String, askama::Error> {
     let now = chrono::Local::now();
     let template = SystemPromptTemplate {
+        agent_instructions: agent_instructions,
         current_date: now.format("%Y-%m-%d").to_string(),
         current_time: now.format("%H:%M:%S %z").to_string(),
         current_working_dir: std::env::current_dir()?.display().to_string(),
@@ -86,13 +95,14 @@ pub trait AgentEventsHandler: Send + Sync {
 
 pub async fn agent_loop_stream(
     user_prompt: &str,
+    agent_instructions: Option<String>,
     tool_registry: &HashMap<String, Box<dyn tools::Tool>>,
     provider: &dyn Provider,
     handler: &dyn AgentEventsHandler,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt = build_system_prompt()?;
+    let system_prompt = build_system_prompt(agent_instructions)?;
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),
