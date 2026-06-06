@@ -146,13 +146,13 @@ impl CustomTool {
         name: &str,
         description: &str,
         parameters: &HashMap<String, ToolParameterSchema>,
-        commands: &Vec<Vec<String>>,
+        commands: &[Vec<String>],
     ) -> Self {
         CustomTool {
             name: name.to_string(),
             description: description.to_string(),
             parameters: parameters.clone(),
-            commands: commands.clone(),
+            commands: commands.to_vec(),
         }
     }
 }
