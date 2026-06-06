@@ -10,19 +10,21 @@ use crate::tools;
 /// ```askama
 /// You are agent Cooper, a special AI agent harness.
 ///
-/// {% if let Some(agent_instructions) = agent_instructions %}
+/// {%- if let Some(agent_instructions) = agent_instructions %}
 /// <agent-instructions>
 /// {{ agent_instructions }}
 /// </agent-instructions>
-/// {% endif %}
+/// {%- endif %}
 ///
+/// {%- if !context_files.is_empty() %}
 /// <context>
-/// {% for (path, content) in context_files %}
+/// {%- for (path, content) in context_files %}
 /// <file path="{{ path }}">
 /// {{ content }}
 /// </file>
-/// {% endfor %}
+/// {%- endfor %}
 /// </context>
+/// {%- endif %}
 ///
 /// Current date: {{ current_date }}
 /// Current time: {{ current_time }}
@@ -44,7 +46,7 @@ fn build_system_prompt(
 ) -> Result<String, askama::Error> {
     let now = chrono::Local::now();
     let template = SystemPromptTemplate {
-        agent_instructions: agent_instructions,
+        agent_instructions,
         context_files: context_files.clone(),
         current_date: now.format("%Y-%m-%d").to_string(),
         current_time: now.format("%H:%M:%S %z").to_string(),
