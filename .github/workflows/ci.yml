@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: |
+          rustup update stable && rustup default stable
+          rustup component add llvm-tools-preview
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check linting
+        run: cargo clippy --all-targets
+
+      - name: Test with coverage
+        run: |
+          cargo llvm-cov --all-targets --no-report
+          cargo llvm-cov report --json --summary-only --output-path coverage.json
+          cargo llvm-cov report --cobertura --output-path cobertura.xml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.json
+            cobertura.xml
+
+  coverage:
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # fetch main first so it's available locally for diff-cover's --compare-branch,
+      # then check out the actual triggering ref (avoids a full-history fetch-depth: 0 clone)
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+
+      - name: Build coverage table
+        run: |
+          {
+            echo "# Code coverage"
+            echo
+            echo "| File | Lines | Functions | Regions |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '
+              .data[0].files[]
+              | "| \(.filename | sub(".*/src/"; "src/")) | \(.summary.lines.percent | round)% (\(.summary.lines.covered)/\(.summary.lines.count)) | \(.summary.functions.percent | round)% (\(.summary.functions.covered)/\(.summary.functions.count)) | \(.summary.regions.percent | round)% (\(.summary.regions.covered)/\(.summary.regions.count)) |"
+            ' coverage.json
+            total_lines=$(jq -r '.data[0].totals.lines.percent | round' coverage.json)
+            total_functions=$(jq -r '.data[0].totals.functions.percent | round' coverage.json)
+            total_regions=$(jq -r '.data[0].totals.regions.percent | round' coverage.json)
+            echo "| **Total** | **${total_lines}%** | **${total_functions}%** | **${total_regions}%** |"
+          } > coverage-summary.md
+
+      - name: Compute diff coverage with target branch
+        if: github.event_name == 'pull_request'
+        env:
+          TARGET_BRANCH: origin/${{ github.event.pull_request.base.ref }}
+        run: |
+          uvx diff-cover --compare-branch "$TARGET_BRANCH" --diff-range-notation '..' \
+            --ignore-staged --ignore-unstaged \
+            --format markdown:diff-coverage.md \
+            cobertura.xml
+          cat diff-coverage.md >> coverage-summary.md
+
+      - name: Write to job summary
+        run: cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          path: coverage-summary.md
+
+  build:
+    needs: ci
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: rustup update stable && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build application
+        run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-cooper-${{ matrix.os }}
+          path: target/release/agent-cooper
+          retention-days: 7
