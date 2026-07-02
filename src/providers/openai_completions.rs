@@ -317,13 +317,14 @@ async fn process_stream(
                 let delta = serde_json::from_str::<ApiStreamChunk>(json)?;
                 if let Some(choice) = delta.choices.first() {
                     if let Some(content) = &choice.delta.content
-                        && !content.is_empty() {
-                            result.text_buf.push_str(content);
-                            handler.on_chunk(&AgentMessageChunk {
-                                text: Some(content.clone()),
-                                reasoning: None,
-                            });
-                        }
+                        && !content.is_empty()
+                    {
+                        result.text_buf.push_str(content);
+                        handler.on_chunk(&AgentMessageChunk {
+                            text: Some(content.clone()),
+                            reasoning: None,
+                        });
+                    }
 
                     let thinking = choice
                         .delta
@@ -331,13 +332,14 @@ async fn process_stream(
                         .as_deref()
                         .or(choice.delta.reasoning_content.as_deref());
                     if let Some(reasoning) = thinking
-                        && !reasoning.is_empty() {
-                            result.reasoning_buf.push_str(reasoning);
-                            handler.on_chunk(&AgentMessageChunk {
-                                text: None,
-                                reasoning: Some(reasoning.to_string()),
-                            });
-                        }
+                        && !reasoning.is_empty()
+                    {
+                        result.reasoning_buf.push_str(reasoning);
+                        handler.on_chunk(&AgentMessageChunk {
+                            text: None,
+                            reasoning: Some(reasoning.to_string()),
+                        });
+                    }
 
                     if let Some(tool_calls) = &choice.delta.tool_calls {
                         for tool_call in tool_calls {
