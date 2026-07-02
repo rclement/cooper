@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
@@ -105,7 +104,7 @@ async fn prompt_cmd(
     };
 
     let provider_name = provider_name.unwrap_or_else(|| config.default_provider.clone());
-    let model_name = model_name.unwrap_or_else(|| config.default_model);
+    let model_name = model_name.unwrap_or(config.default_model);
 
     println!("provider: {provider_name}");
     println!("model: {model_name}");
@@ -152,7 +151,7 @@ async fn prompt_cmd(
 
     let context_files_content: HashMap<String, String> = context_files
         .iter()
-        .filter_map(|path| match std::fs::read_to_string(&path) {
+        .filter_map(|path| match std::fs::read_to_string(path) {
             Ok(contents) => Some((path.clone(), contents)),
             Err(e) => {
                 eprintln!("failed to read context file '{path}': {e}");

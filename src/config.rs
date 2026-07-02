@@ -24,7 +24,7 @@ pub struct ModelConfig {
 
 pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
     let path = dirs::home_dir()
-        .ok_or_else(|| "could not determine home directory")?
+        .ok_or("could not determine home directory")?
         .join(".cooper/settings.yml");
     let yaml_content = std::fs::read_to_string(path)?;
     let content: Config = serde_yaml::from_str(&yaml_content)?;

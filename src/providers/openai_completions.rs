@@ -316,30 +316,28 @@ async fn process_stream(
             if let Some(json) = line.strip_prefix("data: ") {
                 let delta = serde_json::from_str::<ApiStreamChunk>(json)?;
                 if let Some(choice) = delta.choices.first() {
-                    if let Some(content) = &choice.delta.content {
-                        if !content.is_empty() {
+                    if let Some(content) = &choice.delta.content
+                        && !content.is_empty() {
                             result.text_buf.push_str(content);
                             handler.on_chunk(&AgentMessageChunk {
                                 text: Some(content.clone()),
                                 reasoning: None,
                             });
                         }
-                    }
 
                     let thinking = choice
                         .delta
                         .reasoning
                         .as_deref()
                         .or(choice.delta.reasoning_content.as_deref());
-                    if let Some(reasoning) = thinking {
-                        if !reasoning.is_empty() {
+                    if let Some(reasoning) = thinking
+                        && !reasoning.is_empty() {
                             result.reasoning_buf.push_str(reasoning);
                             handler.on_chunk(&AgentMessageChunk {
                                 text: None,
                                 reasoning: Some(reasoning.to_string()),
                             });
                         }
-                    }
 
                     if let Some(tool_calls) = &choice.delta.tool_calls {
                         for tool_call in tool_calls {
