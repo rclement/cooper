@@ -277,4 +277,54 @@ mod tests {
 
         assert_eq!(err, "missing argument: path");
     }
+
+    #[test]
+    fn listfilestool_schema_success() {
+        let expected = ToolSchema {
+            name: "list_files".to_string(),
+            description: "List files in a given directory".to_string(),
+            parameters: HashMap::from([(
+                "path".to_string(),
+                ToolParameterSchema {
+                    param_type: ToolParameterTypeSchema::String,
+                    description: "Directory path".to_string(),
+                    required: true,
+                },
+            )]),
+        };
+
+        let schema = ListFilesTool.schema();
+
+        assert_eq!(schema, expected);
+    }
+
+    #[tokio::test]
+    async fn listfilestool_execute_success() {
+        let mut expected_filenames = vec!["a.txt", "b.txt"];
+        expected_filenames.sort();
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir_path = tmpdir.path();
+        for filename in &expected_filenames {
+            std::fs::write(tmpdir_path.join(filename), "content").unwrap();
+        }
+
+        let args = HashMap::from([(
+            "path".to_string(),
+            tmpdir_path.to_str().unwrap().to_string(),
+        )]);
+        let result = ListFilesTool.execute(&args).await.unwrap();
+        let mut result_files = result.split('\n').collect::<Vec<&str>>();
+        result_files.sort();
+
+        assert_eq!(result_files, expected_filenames);
+    }
+
+    #[tokio::test]
+    async fn listfilestool_execute_missing_path() {
+        let args = HashMap::new();
+        let err = ListFilesTool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "missing argument: path");
+    }
 }
