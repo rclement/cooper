@@ -2,20 +2,21 @@ use std::{collections::HashMap, process};
 
 /// === tool type definitions === ///
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ToolParameterTypeSchema {
     String,
     Number,
     Boolean,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ToolParameterSchema {
     pub param_type: ToolParameterTypeSchema,
     pub description: String,
     pub required: bool,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
@@ -226,5 +227,54 @@ impl Tool for CustomTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         Ok(stdout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn readfiletool_schema_success() {
+        let expected = ToolSchema {
+            name: "read_file".to_string(),
+            description: "Read the content of a file".to_string(),
+            parameters: HashMap::from([(
+                "path".to_string(),
+                ToolParameterSchema {
+                    param_type: ToolParameterTypeSchema::String,
+                    description: "File path".to_string(),
+                    required: true,
+                },
+            )]),
+        };
+
+        let schema = ReadFileTool.schema();
+
+        assert_eq!(schema, expected);
+    }
+
+    #[tokio::test]
+    async fn readfiletool_execute_success() {
+        let content = "some content";
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(content.as_bytes()).unwrap();
+
+        let args = HashMap::from([(
+            "path".to_string(),
+            tmpfile.path().to_str().unwrap().to_string(),
+        )]);
+        let result = ReadFileTool.execute(&args).await.unwrap();
+
+        assert_eq!(result, content);
+    }
+
+    #[tokio::test]
+    async fn readfiletool_execute_missing_path() {
+        let args = HashMap::new();
+        let err = ReadFileTool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "missing argument: path");
     }
 }
