@@ -34,14 +34,25 @@ const BLOCK_KIND = {
   tool: { label: "Tool", icon: "⚙", collapsible: true },
 };
 
-let current = { type: null, body: null, preview: null, raw: "" };
+// Blocks that represent work happening "behind the scenes" (collapsed by
+// default, so there's otherwise no visual cue anything is going on) get a
+// pulsing icon for as long as they're the block actively being written to.
+const PULSING_KINDS = new Set(["reasoning", "tool"]);
+
+let current = { type: null, body: null, preview: null, raw: "", icon: null };
 
 function truncate(text, max = 90) {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
+function stopPulse() {
+  current.icon?.classList.remove("is-active");
+}
+
 function openBlock(type) {
+  stopPulse();
+
   const kind = BLOCK_KIND[type];
   const el = document.createElement(kind.collapsible ? "details" : "div");
   el.className = `block block-${type}`;
@@ -52,6 +63,7 @@ function openBlock(type) {
   const icon = document.createElement("span");
   icon.className = "block-icon";
   icon.textContent = kind.icon;
+  if (PULSING_KINDS.has(type)) icon.classList.add("is-active");
 
   const label = document.createElement("span");
   label.className = "block-label";
@@ -72,7 +84,7 @@ function openBlock(type) {
   el.append(header, body);
   $("timeline").appendChild(el);
 
-  current = { type, body, preview, raw: "" };
+  current = { type, body, preview, raw: "", icon };
 }
 
 function appendSystemPrompt(text) {
@@ -117,17 +129,19 @@ function appendToolResult(event) {
   current.body.appendChild(line);
 
   current.preview.textContent = `${isError ? "✗" : "✓"} ${current.preview.textContent}`;
+  stopPulse();
   current.type = null; // next event starts a fresh block, even if also a tool call
 }
 
 function appendUsage(event) {
+  stopPulse();
   const el = document.createElement("div");
   el.className = "block block-usage";
   el.textContent =
     `${event.total_tokens} tokens` +
     ` · ${event.prompt_tokens} prompt · ${event.completion_tokens} completion`;
   $("timeline").appendChild(el);
-  current = { type: null, body: null, preview: null };
+  current = { type: null, body: null, preview: null, raw: "", icon: null };
 }
 
 function handleEvent(event) {
@@ -156,9 +170,11 @@ worker.onmessage = (message) => {
   if (msg.type === "event") {
     handleEvent(msg.event);
   } else if (msg.type === "done") {
+    stopPulse();
     $("status").textContent = "done";
     $("run").disabled = false;
   } else if (msg.type === "error") {
+    stopPulse();
     $("status").textContent = `error: ${msg.error}`;
     $("run").disabled = false;
   }
@@ -181,7 +197,7 @@ $("run").addEventListener("click", () => {
   const enabledTools = getEnabledToolNames();
 
   $("timeline").innerHTML = "";
-  current = { type: null, body: null, preview: null };
+  current = { type: null, body: null, preview: null, raw: "", icon: null };
   $("status").textContent = "running…";
   $("run").disabled = true;
 

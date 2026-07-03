@@ -631,6 +631,23 @@ details[open] > summary.block-header::before {
   line-height: 1;
 }
 
+@keyframes block-icon-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.block-icon.is-active {
+  display: inline-block;
+  animation: block-icon-pulse 1.1s ease-in-out infinite;
+}
+
 .block-label {
   font-weight: 600;
   color: var(--text-dim);
