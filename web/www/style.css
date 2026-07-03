@@ -182,6 +182,91 @@ body {
   font-size: 0.8rem;
 }
 
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  /* Override the global `label` rule's uppercase/size/letter-spacing —
+     this label wraps a tool name and shouldn't look like a form field. */
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.tool-row input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.tool-row-name {
+  font-family: var(--mono);
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.3em;
+  padding: 0.05em 0.3em;
+  font-size: 0.9em;
+}
+
+.tool-info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tool-info:hover,
+.tool-info:focus-visible,
+.tool-info.is-open {
+  color: var(--text);
+  border-color: var(--text-dim);
+  outline: none;
+}
+
+.tool-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.5em);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 14rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.4em;
+  padding: 0.5em 0.6em;
+  font-size: 0.9em;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text-dim);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease;
+  z-index: 1;
+}
+
+.tool-info.is-open .tool-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
 .context-file-list {
   display: flex;
   flex-direction: column;

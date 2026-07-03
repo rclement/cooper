@@ -1,6 +1,9 @@
-// Per-session context customization: system prompt template override, agent
-// instructions (an AGENTS.md equivalent), and context files fetched by URL.
-// Persisted to localStorage, same pattern as settings.js.
+// Per-session context customization: which built-in tools are enabled,
+// system prompt template override, agent instructions (an AGENTS.md
+// equivalent), and context files fetched by URL. Persisted to localStorage,
+// same pattern as settings.js.
+import { BUILTIN_TOOLS } from "./builtin-tools.js";
+
 const STORAGE_KEY = "cooper.context.v1";
 
 const $ = (id) => document.getElementById(id);
@@ -12,14 +15,22 @@ function uid() {
 }
 
 function seed() {
-  return { systemPromptTemplate: "", agentInstructions: "", contextFiles: [] };
+  return {
+    enabledTools: Object.fromEntries(Object.keys(BUILTIN_TOOLS).map((name) => [name, true])),
+    systemPromptTemplate: "",
+    agentInstructions: "",
+    contextFiles: [],
+  };
 }
 
 function load() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
     try {
-      return { ...seed(), ...JSON.parse(raw) };
+      const stored = JSON.parse(raw);
+      // Any built-in tool added since this was last saved defaults to enabled.
+      const enabledTools = { ...seed().enabledTools, ...stored.enabledTools };
+      return { ...seed(), ...stored, enabledTools };
     } catch {
       // fall through to a fresh seed if the stored value is corrupt
     }
@@ -41,6 +52,12 @@ function derivePath(url) {
   }
 }
 
+export function getEnabledToolNames() {
+  return Object.entries(context.enabledTools)
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+}
+
 export function getContextConfig() {
   return {
     systemPromptTemplate: context.systemPromptTemplate.trim() || null,
@@ -49,6 +66,59 @@ export function getContextConfig() {
       .filter((f) => !f.loading && !f.error)
       .map((f) => ({ path: f.path, content: f.content })),
   };
+}
+
+function closeAllTooltips() {
+  for (const el of document.querySelectorAll(".tool-info.is-open")) {
+    el.classList.remove("is-open");
+  }
+}
+
+function renderToolList() {
+  const container = $("tool-list");
+  container.innerHTML = "";
+
+  for (const [name, tool] of Object.entries(BUILTIN_TOOLS)) {
+    const row = document.createElement("label");
+    row.className = "tool-row";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = Boolean(context.enabledTools[name]);
+    checkbox.addEventListener("change", () => {
+      context.enabledTools[name] = checkbox.checked;
+      persist();
+    });
+
+    const label = document.createElement("span");
+    label.className = "tool-row-name";
+    label.textContent = name;
+
+    const info = document.createElement("span");
+    info.className = "tool-info";
+    info.tabIndex = 0;
+    info.textContent = "?";
+    const tooltip = document.createElement("span");
+    tooltip.className = "tool-tooltip";
+    tooltip.textContent = tool.schema.description;
+    info.appendChild(tooltip);
+
+    const toggleTooltip = (event) => {
+      // Prevent the enclosing <label> from toggling the checkbox.
+      event.preventDefault();
+      event.stopPropagation();
+      const isOpen = info.classList.contains("is-open");
+      closeAllTooltips();
+      if (!isOpen) info.classList.add("is-open");
+    };
+    info.addEventListener("click", toggleTooltip);
+    info.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") toggleTooltip(event);
+    });
+
+    row.append(checkbox, label, info);
+    container.appendChild(row);
+  }
 }
 
 function renderFileList() {
@@ -133,6 +203,8 @@ export function initContext() {
 
   $("system-prompt-template").value = context.systemPromptTemplate;
   $("agent-instructions").value = context.agentInstructions;
+  renderToolList();
+  document.addEventListener("click", closeAllTooltips);
   renderFileList();
 
   $("system-prompt-template").addEventListener("change", (event) => {

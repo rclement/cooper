@@ -362,6 +362,7 @@ dependencies = [
 name = "cooper-web"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "console_error_panic_hook",
  "cooper-core",
  "js-sys",
