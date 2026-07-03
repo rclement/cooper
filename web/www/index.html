@@ -7,62 +7,80 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
-      <h1>Cooper <span class="badge">web</span></h1>
-      <p class="hint">
-        Runs entirely client-side, in a Web Worker running a wasm build of the
-        same agent core as the CLI. No server-side proxy — your API key and
-        prompts never leave the browser.
-      </p>
-    </header>
+    <div class="app">
+      <nav class="sidebar">
+        <div class="brand">Cooper <span class="badge">web</span></div>
 
-    <main>
-      <section class="config">
-        <div class="field">
-          <label for="base-url">Base URL</label>
-          <input id="base-url" value="http://localhost:11434/v1" />
-        </div>
-        <div class="field">
-          <label for="api-key">API key</label>
-          <input id="api-key" type="password" value="ollama" />
-        </div>
-        <div class="field">
-          <label for="model">Model</label>
-          <input id="model" value="qwen3.5:0.8b" />
-        </div>
-      </section>
+        <button class="nav-item is-active" data-view="sessions" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
+          <span>Sessions</span>
+        </button>
 
-      <section class="prompt-area">
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" rows="3">reply with exactly the word: PONG</textarea>
-        <div class="row">
-          <button id="run">Run</button>
-          <span id="status" class="status"></span>
-        </div>
-      </section>
+        <button class="nav-item" data-view="settings" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+          <span>Settings</span>
+        </button>
+      </nav>
 
-      <section class="output-grid">
-        <div class="block">
-          <h2>Reasoning</h2>
-          <pre id="reasoning" class="panel"></pre>
-        </div>
+      <main class="content">
+        <section id="view-sessions" class="view is-active">
+          <p class="hint">
+            Runs entirely client-side, in a Web Worker running a wasm build of
+            the same agent core as the CLI. No server-side proxy — your API
+            key and prompts never leave the browser.
+          </p>
 
-        <div class="block">
-          <h2>Response</h2>
-          <pre id="output" class="panel"></pre>
-        </div>
+          <section class="prompt-area">
+            <div class="config">
+              <div class="field">
+                <label for="provider-select">Provider</label>
+                <select id="provider-select"></select>
+              </div>
+              <div class="field">
+                <label for="model-select">Model</label>
+                <select id="model-select"></select>
+              </div>
+            </div>
 
-        <div class="block">
-          <h2>Tool activity</h2>
-          <div id="tool-log" class="panel"></div>
-        </div>
+            <label for="prompt">Prompt</label>
+            <textarea id="prompt" rows="3"></textarea>
+            <div class="row">
+              <button id="run">Run</button>
+              <span id="status" class="status"></span>
+            </div>
+          </section>
 
-        <div class="block">
-          <h2>Usage</h2>
-          <div id="usage" class="panel"></div>
-        </div>
-      </section>
-    </main>
+          <div id="timeline" class="timeline"></div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div id="provider-list" class="provider-list"></div>
+
+          <form id="add-provider-form" class="add-provider-form">
+            <div class="field">
+              <label for="new-provider-name">Name</label>
+              <input id="new-provider-name" placeholder="e.g. Ollama (local)" />
+            </div>
+            <div class="field">
+              <label for="new-provider-base-url">Base URL</label>
+              <input
+                id="new-provider-base-url"
+                placeholder="http://localhost:11434/v1"
+              />
+            </div>
+            <div class="field">
+              <label for="new-provider-api-key">API key</label>
+              <input id="new-provider-api-key" type="password" placeholder="(optional)" />
+            </div>
+            <button type="submit">Add provider</button>
+          </form>
+
+          <button id="reset-settings" type="button" class="danger">
+            Reset all settings
+          </button>
+        </section>
+      </main>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>
