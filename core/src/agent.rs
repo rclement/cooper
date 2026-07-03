@@ -118,7 +118,8 @@ pub async fn agent_loop_stream(
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt = build_system_prompt(agent_instructions, context_files, current_working_dir)?;
+    let system_prompt =
+        build_system_prompt(agent_instructions, context_files, current_working_dir)?;
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),

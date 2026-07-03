@@ -52,8 +52,11 @@ impl WasmAgent {
     /// promise resolves with the final assistant message as a JSON string
     /// (see `MessageDto`), or rejects with an error string.
     pub fn run_prompt(&self, prompt: String, on_event: js_sys::Function) -> js_sys::Promise {
-        let provider =
-            OpenAICompletionsAPI::new(&self.config.base_url, &self.config.api_key, &self.config.model);
+        let provider = OpenAICompletionsAPI::new(
+            &self.config.base_url,
+            &self.config.api_key,
+            &self.config.model,
+        );
         let agent_instructions = self.config.agent_instructions.clone();
         let context_files: HashMap<String, String> = self
             .config
@@ -92,7 +95,9 @@ struct JsEventHandler {
 impl JsEventHandler {
     fn emit(&self, event: &EventDto) {
         if let Ok(json) = serde_json::to_string(event) {
-            let _ = self.on_event.call1(&JsValue::NULL, &JsValue::from_str(&json));
+            let _ = self
+                .on_event
+                .call1(&JsValue::NULL, &JsValue::from_str(&json));
         }
     }
 }
@@ -161,7 +166,9 @@ struct MessageDto {
 impl From<&Message> for MessageDto {
     fn from(m: &Message) -> Self {
         match m {
-            Message::Assistant { text, reasoning, .. } => MessageDto {
+            Message::Assistant {
+                text, reasoning, ..
+            } => MessageDto {
                 text: text.clone(),
                 reasoning: reasoning.clone(),
             },
