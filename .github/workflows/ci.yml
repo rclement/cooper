@@ -104,7 +104,11 @@ jobs:
     needs: ci
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +123,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-cooper-${{ matrix.os }}
+          name: agent-cooper-${{ matrix.name }}
           path: target/release/agent-cooper
           retention-days: 7
