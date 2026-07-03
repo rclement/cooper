@@ -1,7 +1,7 @@
 // Main-thread UI glue: wires the form to the agent Worker and renders the
 // events it streams back. No framework, no build step.
 import { initSettings, getCurrentConfig } from "./settings.js";
-import { initContext, getContextConfig } from "./context.js";
+import { initContext, getContextConfig, getEnabledToolNames } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
 
 const worker = new Worker("worker.js", { type: "module" });
@@ -178,11 +178,12 @@ $("run").addEventListener("click", () => {
     context_files: contextConfig.contextFiles,
   };
   const prompt = $("prompt").value;
+  const enabledTools = getEnabledToolNames();
 
   $("timeline").innerHTML = "";
   current = { type: null, body: null, preview: null };
   $("status").textContent = "running…";
   $("run").disabled = true;
 
-  worker.postMessage({ prompt, config });
+  worker.postMessage({ prompt, config, enabledTools });
 });

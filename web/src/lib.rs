@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use cooper_core::agent::{self, AgentEventsHandler, AgentMessageChunk, Message, ToolCall, Usage};
 use cooper_core::providers::openai_completions::OpenAICompletionsAPI;
-use cooper_core::tools::Tool;
+use cooper_core::tools::{Tool, ToolSchema};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(start)]
@@ -30,12 +31,68 @@ struct AgentConfig {
     context_files: Vec<ContextFile>,
 }
 
-/// Browser-side Cooper agent. Constructed with a JSON config object; there are
-/// no built-in tools yet (fs/process tools are native-only, browser-safe
-/// tools land in a later step) so the loop always runs tool-free for now.
+/// A tool registered from JS: `schema` describes it to the model, and
+/// `execute_fn(args_json) -> Promise<string>` runs it. `js_sys::Function` is
+/// cheap to clone (it's a ref-counted JS object handle), so each `run_prompt`
+/// call can build its own `Box<dyn Tool>` registry from these without
+/// disturbing the ones stored on `WasmAgent`.
+#[derive(Clone)]
+struct RegisteredTool {
+    schema: ToolSchema,
+    execute_fn: js_sys::Function,
+}
+
+/// Bridges the core's `Tool` trait to a JS-implemented tool. This is the
+/// mechanism for *any* dynamically-registered tool, not just built-ins like
+/// `fetch_url` — a future Python/Pyodide tool would just be a JS `execute_fn`
+/// that calls into the Pyodide runtime.
+struct JsTool {
+    schema: ToolSchema,
+    execute_fn: js_sys::Function,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Tool for JsTool {
+    fn schema(&self) -> ToolSchema {
+        self.schema.clone()
+    }
+
+    async fn execute(&self, args: &HashMap<String, String>) -> Result<String, String> {
+        let args_json = serde_json::to_string(args).map_err(|e| e.to_string())?;
+        let promise = self
+            .execute_fn
+            .call1(&JsValue::NULL, &JsValue::from_str(&args_json))
+            .map_err(|e| js_error_to_string(&e))?;
+        let promise: js_sys::Promise = promise
+            .dyn_into()
+            .map_err(|_| "tool did not return a promise".to_string())?;
+        let result = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|e| js_error_to_string(&e))?;
+        result
+            .as_string()
+            .ok_or_else(|| "tool did not resolve to a string".to_string())
+    }
+}
+
+fn js_error_to_string(value: &JsValue) -> String {
+    value
+        .as_string()
+        .or_else(|| {
+            js_sys::Reflect::get(value, &JsValue::from_str("message"))
+                .ok()?
+                .as_string()
+        })
+        .unwrap_or_else(|| format!("{value:?}"))
+}
+
+/// Browser-side Cooper agent. Constructed with a JSON config object; tools
+/// are registered separately via `register_tool` since they carry a JS
+/// callback, which isn't representable in the JSON config.
 #[wasm_bindgen]
 pub struct WasmAgent {
     config: AgentConfig,
+    tools: Vec<RegisteredTool>,
 }
 
 #[wasm_bindgen]
@@ -47,7 +104,27 @@ impl WasmAgent {
     pub fn new(config_json: &str) -> Result<WasmAgent, JsValue> {
         let config: AgentConfig =
             serde_json::from_str(config_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(WasmAgent { config })
+        Ok(WasmAgent {
+            config,
+            tools: Vec::new(),
+        })
+    }
+
+    /// Registers a tool available for the agent to call. `schema_json` must
+    /// match `ToolSchema`'s JSON shape: `{ name, description, parameters:
+    /// { <param>: { type, description, required } } }`. `execute_fn` is
+    /// called with a JSON object of string arguments and must return (a
+    /// promise resolving to) a string result; throwing/rejecting reports a
+    /// tool error back to the agent.
+    pub fn register_tool(
+        &mut self,
+        schema_json: &str,
+        execute_fn: js_sys::Function,
+    ) -> Result<(), JsValue> {
+        let schema: ToolSchema =
+            serde_json::from_str(schema_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.tools.push(RegisteredTool { schema, execute_fn });
+        Ok(())
     }
 
     /// Runs one agentic-loop turn for `prompt`. `on_event` is called with a
@@ -68,7 +145,19 @@ impl WasmAgent {
             .iter()
             .map(|f| (f.path.clone(), f.content.clone()))
             .collect();
-        let tool_registry: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        let tool_registry: HashMap<String, Box<dyn Tool>> = self
+            .tools
+            .iter()
+            .cloned()
+            .map(|t| {
+                let name = t.schema.name.clone();
+                let tool: Box<dyn Tool> = Box::new(JsTool {
+                    schema: t.schema,
+                    execute_fn: t.execute_fn,
+                });
+                (name, tool)
+            })
+            .collect();
         let handler = JsEventHandler { on_event };
 
         wasm_bindgen_futures::future_to_promise(async move {

@@ -276,7 +276,7 @@ mod tests {
 
     struct EchoTool;
 
-    #[async_trait::async_trait]
+    #[async_trait::async_trait(?Send)]
     impl tools::Tool for EchoTool {
         fn schema(&self) -> tools::ToolSchema {
             tools::ToolSchema {

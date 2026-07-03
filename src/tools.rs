@@ -5,7 +5,7 @@ use cooper_core::tools::{ToolParameterSchema, ToolParameterTypeSchema, ToolSchem
 
 pub struct ListFilesTool;
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl Tool for ListFilesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
@@ -37,7 +37,7 @@ impl Tool for ListFilesTool {
 
 pub struct ReadFileTool;
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl Tool for ReadFileTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
@@ -66,7 +66,7 @@ impl Tool for ReadFileTool {
 
 pub struct ExecCmdTool;
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl Tool for ExecCmdTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
@@ -130,7 +130,7 @@ impl CustomTool {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl Tool for CustomTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
