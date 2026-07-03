@@ -1,62 +1,84 @@
 use std::collections::HashMap;
 
-use askama::Template;
+use serde::Serialize;
 
 use crate::providers::Provider;
 use crate::tools;
 
-/// ```askama
-/// You are agent Cooper, a special AI agent harness.
-///
-/// {%- if let Some(agent_instructions) = agent_instructions %}
-/// <agent-instructions>
-/// {{ agent_instructions }}
-/// </agent-instructions>
-/// {%- endif %}
-///
-/// {%- if !context_files.is_empty() %}
-/// <context>
-/// {%- for (path, content) in context_files %}
-/// <file path="{{ path }}">
-/// {{ content }}
-/// </file>
-/// {%- endfor %}
-/// </context>
-/// {%- endif %}
-///
-/// Current date: {{ current_date }}
-/// Current time: {{ current_time }}
-/// {%- if let Some(current_working_dir) = current_working_dir %}
-/// Current working directory: {{ current_working_dir }}
-/// {%- endif %}
-/// ```
-#[derive(askama::Template)]
-#[template(ext = "txt", in_doc = true)]
-struct SystemPromptTemplate {
-    agent_instructions: Option<String>,
-    context_files: HashMap<String, String>,
+/// Jinja2-style syntax via `minijinja`, not `askama`: the whole point is that
+/// a caller (e.g. the web UI) can supply its *own* template string at
+/// runtime to override this default, which askama's compile-time templates
+/// can't do.
+const DEFAULT_SYSTEM_PROMPT_TEMPLATE: &str = r#"You are agent Cooper, a special AI agent harness.
+{%- if agent_instructions %}
+
+<agent-instructions>
+{{ agent_instructions }}
+</agent-instructions>
+{%- endif %}
+{%- if context_files %}
+
+<context>
+{%- for file in context_files %}
+<file path="{{ file.path }}">
+{{ file.content }}
+</file>
+{%- endfor %}
+</context>
+{%- endif %}
+
+Current date: {{ current_date }}
+Current time: {{ current_time }}
+{%- if current_working_dir %}
+Current working directory: {{ current_working_dir }}
+{%- endif %}"#;
+
+#[derive(Serialize)]
+struct ContextFileView<'a> {
+    path: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct SystemPromptContext<'a> {
+    agent_instructions: Option<&'a str>,
+    context_files: Vec<ContextFileView<'a>>,
     current_date: String,
     current_time: String,
-    current_working_dir: Option<String>,
+    current_working_dir: Option<&'a str>,
 }
 
 /// `current_working_dir` is caller-supplied rather than resolved here, since
 /// the notion of a working directory doesn't exist in every environment this
 /// core runs in (e.g. a browser tab has no filesystem/cwd).
+///
+/// `system_prompt_template` lets a caller override the whole template (e.g. a
+/// user customizing it from the web UI); `None` renders
+/// `DEFAULT_SYSTEM_PROMPT_TEMPLATE`.
 fn build_system_prompt(
-    agent_instructions: Option<String>,
+    system_prompt_template: Option<&str>,
+    agent_instructions: Option<&str>,
     context_files: &HashMap<String, String>,
-    current_working_dir: Option<String>,
-) -> Result<String, askama::Error> {
+    current_working_dir: Option<&str>,
+) -> Result<String, minijinja::Error> {
     let now = chrono::Local::now();
-    let template = SystemPromptTemplate {
+    let context = SystemPromptContext {
         agent_instructions,
-        context_files: context_files.clone(),
+        context_files: context_files
+            .iter()
+            .map(|(path, content)| ContextFileView { path, content })
+            .collect(),
         current_date: now.format("%Y-%m-%d").to_string(),
         current_time: now.format("%H:%M:%S %z").to_string(),
         current_working_dir,
     };
-    template.render()
+
+    let mut env = minijinja::Environment::new();
+    env.add_template(
+        "system_prompt",
+        system_prompt_template.unwrap_or(DEFAULT_SYSTEM_PROMPT_TEMPLATE),
+    )?;
+    env.get_template("system_prompt")?.render(context)
 }
 
 #[derive(Clone)]
@@ -107,8 +129,10 @@ pub trait AgentEventsHandler {
     fn on_tool_result(&self, _tool_result: &Result<String, String>) {}
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn agent_loop_stream(
     user_prompt: &str,
+    system_prompt_template: Option<String>,
     agent_instructions: Option<String>,
     context_files: &HashMap<String, String>,
     current_working_dir: Option<String>,
@@ -118,8 +142,12 @@ pub async fn agent_loop_stream(
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt =
-        build_system_prompt(agent_instructions, context_files, current_working_dir)?;
+    let system_prompt = build_system_prompt(
+        system_prompt_template.as_deref(),
+        agent_instructions.as_deref(),
+        context_files,
+        current_working_dir.as_deref(),
+    )?;
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),
@@ -263,9 +291,10 @@ mod tests {
         let context_files = HashMap::from([("main.rs".to_string(), "fn main() {}".to_string())]);
 
         let prompt = build_system_prompt(
-            Some("Be concise.".to_string()),
+            None,
+            Some("Be concise."),
             &context_files,
-            Some("/home/user/project".to_string()),
+            Some("/home/user/project"),
         )
         .unwrap();
 
@@ -276,11 +305,32 @@ mod tests {
 
     #[test]
     fn build_system_prompt_omits_empty_sections() {
-        let prompt = build_system_prompt(None, &HashMap::new(), None).unwrap();
+        let prompt = build_system_prompt(None, None, &HashMap::new(), None).unwrap();
 
         assert!(!prompt.contains("<agent-instructions>"));
         assert!(!prompt.contains("<context>"));
         assert!(!prompt.contains("Current working directory"));
+    }
+
+    #[test]
+    fn build_system_prompt_uses_custom_template_when_provided() {
+        let prompt = build_system_prompt(
+            Some("Custom prompt. Instructions: {{ agent_instructions }}"),
+            Some("be terse"),
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(prompt, "Custom prompt. Instructions: be terse");
+    }
+
+    #[test]
+    fn build_system_prompt_errors_on_invalid_custom_template() {
+        let err = build_system_prompt(Some("{% unknown_tag %}"), None, &HashMap::new(), None)
+            .unwrap_err();
+
+        assert!(!err.to_string().is_empty());
     }
 
     #[tokio::test]
@@ -292,6 +342,7 @@ mod tests {
 
         let result = agent_loop_stream(
             "hello",
+            None,
             None,
             &HashMap::new(),
             None,
@@ -334,6 +385,7 @@ mod tests {
 
         let result = agent_loop_stream(
             "hello",
+            None,
             None,
             &HashMap::new(),
             None,
@@ -383,6 +435,7 @@ mod tests {
         let _ = agent_loop_stream(
             "hello",
             None,
+            None,
             &HashMap::new(),
             None,
             &HashMap::new(),
@@ -407,6 +460,7 @@ mod tests {
 
         let result = agent_loop_stream(
             "hello",
+            None,
             None,
             &HashMap::new(),
             None,
@@ -435,6 +489,7 @@ mod tests {
         let result = agent_loop_stream(
             "hello",
             None,
+            None,
             &HashMap::new(),
             None,
             &HashMap::new(),
@@ -459,6 +514,7 @@ mod tests {
 
         let result = agent_loop_stream(
             "hello",
+            None,
             None,
             &HashMap::new(),
             None,
@@ -511,6 +567,7 @@ mod tests {
         let result = agent_loop_stream(
             "hello",
             None,
+            None,
             &HashMap::new(),
             None,
             &tool_registry,
@@ -533,6 +590,7 @@ mod tests {
 
         let result = agent_loop_stream(
             "hello",
+            None,
             None,
             &HashMap::new(),
             None,

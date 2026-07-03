@@ -24,33 +24,81 @@
 
       <main class="content">
         <section id="view-sessions" class="view is-active">
-          <p class="hint">
-            Runs entirely client-side, in a Web Worker running a wasm build of
-            the same agent core as the CLI. No server-side proxy — your API
-            key and prompts never leave the browser.
-          </p>
+          <div class="session-layout">
+            <div class="session-main">
+              <p class="hint">
+                Runs entirely client-side, in a Web Worker running a wasm
+                build of the same agent core as the CLI. No server-side proxy
+                — your API key and prompts never leave the browser.
+              </p>
 
-          <section class="prompt-area">
-            <div class="config">
-              <div class="field">
-                <label for="provider-select">Provider</label>
-                <select id="provider-select"></select>
-              </div>
-              <div class="field">
-                <label for="model-select">Model</label>
-                <select id="model-select"></select>
-              </div>
+              <section class="prompt-area">
+                <div class="config">
+                  <div class="field">
+                    <label for="provider-select">Provider</label>
+                    <select id="provider-select"></select>
+                  </div>
+                  <div class="field">
+                    <label for="model-select">Model</label>
+                    <select id="model-select"></select>
+                  </div>
+                </div>
+
+                <label for="prompt">Prompt</label>
+                <textarea id="prompt" rows="3"></textarea>
+                <div class="row">
+                  <button id="run">Run</button>
+                  <span id="status" class="status"></span>
+                </div>
+              </section>
+
+              <div id="timeline" class="timeline"></div>
             </div>
 
-            <label for="prompt">Prompt</label>
-            <textarea id="prompt" rows="3"></textarea>
-            <div class="row">
-              <button id="run">Run</button>
-              <span id="status" class="status"></span>
-            </div>
-          </section>
+            <aside class="context-panel">
+              <div class="context-section">
+                <h3>System prompt template</h3>
+                <p class="hint">
+                  Overrides the whole template (Jinja-style). Leave empty to
+                  use the default. Available: <code>agent_instructions</code>,
+                  <code>context_files</code> (each with <code>path</code>/
+                  <code>content</code>), <code>current_date</code>,
+                  <code>current_time</code>, <code>current_working_dir</code>.
+                </p>
+                <textarea
+                  id="system-prompt-template"
+                  rows="8"
+                  placeholder="(default template)"
+                ></textarea>
+              </div>
 
-          <div id="timeline" class="timeline"></div>
+              <div class="context-section">
+                <h3>Agent instructions</h3>
+                <p class="hint">
+                  Equivalent to an AGENTS.md — persistent guidance injected
+                  into every prompt.
+                </p>
+                <textarea
+                  id="agent-instructions"
+                  rows="4"
+                  placeholder="e.g. Be concise. Prefer bullet points."
+                ></textarea>
+              </div>
+
+              <div class="context-section">
+                <h3>Context files</h3>
+                <p class="hint">
+                  Fetched by URL when added (subject to CORS) and forwarded
+                  to the agent as extra context.
+                </p>
+                <div id="context-file-list" class="context-file-list"></div>
+                <form id="add-context-file-form" class="add-context-file-form">
+                  <input id="new-context-file-url" placeholder="https://…" />
+                  <button type="submit">Add</button>
+                </form>
+              </div>
+            </aside>
+          </div>
         </section>
 
         <section id="view-settings" class="view">

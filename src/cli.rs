@@ -178,6 +178,7 @@ async fn prompt_cmd(
 
     match agent::agent_loop_stream(
         &text,
+        None,
         agent_instructions_content,
         &context_files_content,
         current_working_dir,

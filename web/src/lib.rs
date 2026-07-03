@@ -23,6 +23,8 @@ struct AgentConfig {
     api_key: String,
     model: String,
     #[serde(default)]
+    system_prompt_template: Option<String>,
+    #[serde(default)]
     agent_instructions: Option<String>,
     #[serde(default)]
     context_files: Vec<ContextFile>,
@@ -39,7 +41,8 @@ pub struct WasmAgent {
 #[wasm_bindgen]
 impl WasmAgent {
     /// `config_json` fields: `base_url`, `api_key`, `model`, and optionally
-    /// `agent_instructions` and `context_files` (`[{ path, content }]`).
+    /// `system_prompt_template`, `agent_instructions`, and `context_files`
+    /// (`[{ path, content }]`).
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str) -> Result<WasmAgent, JsValue> {
         let config: AgentConfig =
@@ -57,6 +60,7 @@ impl WasmAgent {
             &self.config.api_key,
             &self.config.model,
         );
+        let system_prompt_template = self.config.system_prompt_template.clone();
         let agent_instructions = self.config.agent_instructions.clone();
         let context_files: HashMap<String, String> = self
             .config
@@ -70,6 +74,7 @@ impl WasmAgent {
         wasm_bindgen_futures::future_to_promise(async move {
             let result = agent::agent_loop_stream(
                 &prompt,
+                system_prompt_template,
                 agent_instructions,
                 &context_files,
                 None,
