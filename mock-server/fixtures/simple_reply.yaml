@@ -1,0 +1,7 @@
+# A single-turn reply, no reasoning or tool calls. Good smoke-test default.
+responses:
+  - text: "PONG"
+    usage:
+      prompt_tokens: 42
+      completion_tokens: 3
+      total_tokens: 45

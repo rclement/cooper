@@ -1,0 +1,11 @@
+# A single turn that includes reasoning content ahead of the final answer,
+# exercising the client's reasoning/response split.
+responses:
+  - reasoning: |
+      The user wants me to reply with exactly the word PONG. I will do that
+      and nothing else.
+    text: "PONG"
+    usage:
+      prompt_tokens: 58
+      completion_tokens: 24
+      total_tokens: 82

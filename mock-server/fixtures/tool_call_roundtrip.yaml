@@ -1,0 +1,21 @@
+# Two turns: the first calls the `exec_cmd` tool, the second replies with the
+# final answer once the tool result comes back. Exercises the full agent
+# loop's tool-call round trip. Requires the `exec_cmd` tool to be registered
+# (it is, by default, in the native CLI).
+responses:
+  - reasoning: "I should run a command to be sure, then reply with its output."
+    tool_calls:
+      - id: call-1
+        name: exec_cmd
+        arguments:
+          command: "echo PONG"
+    usage:
+      prompt_tokens: 60
+      completion_tokens: 18
+      total_tokens: 78
+
+  - text: "PONG"
+    usage:
+      prompt_tokens: 90
+      completion_tokens: 3
+      total_tokens: 93
