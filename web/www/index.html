@@ -7,39 +7,62 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <h1>Cooper <span class="badge">web</span></h1>
-    <p class="hint">
-      Runs entirely client-side, in a Web Worker running a wasm build of the
-      same agent core as the CLI. No server-side proxy — your API key and
-      prompts never leave the browser.
-    </p>
+    <header>
+      <h1>Cooper <span class="badge">web</span></h1>
+      <p class="hint">
+        Runs entirely client-side, in a Web Worker running a wasm build of the
+        same agent core as the CLI. No server-side proxy — your API key and
+        prompts never leave the browser.
+      </p>
+    </header>
 
-    <fieldset>
-      <legend>Provider config</legend>
-      <label>Base URL <input id="base-url" value="http://localhost:11434/v1" /></label>
-      <label>API key <input id="api-key" type="password" value="ollama" /></label>
-      <label>Model <input id="model" value="qwen3.5:0.8b" /></label>
-    </fieldset>
+    <main>
+      <section class="config">
+        <div class="field">
+          <label for="base-url">Base URL</label>
+          <input id="base-url" value="http://localhost:11434/v1" />
+        </div>
+        <div class="field">
+          <label for="api-key">API key</label>
+          <input id="api-key" type="password" value="ollama" />
+        </div>
+        <div class="field">
+          <label for="model">Model</label>
+          <input id="model" value="qwen3.5:0.8b" />
+        </div>
+      </section>
 
-    <label for="prompt">Prompt</label>
-    <textarea id="prompt" rows="3">reply with exactly the word: PONG</textarea>
+      <section class="prompt-area">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" rows="3">reply with exactly the word: PONG</textarea>
+        <div class="row">
+          <button id="run">Run</button>
+          <span id="status" class="status"></span>
+        </div>
+      </section>
 
-    <div class="row">
-      <button id="run">Run</button>
-      <span id="status"></span>
-    </div>
+      <section class="output-grid">
+        <div class="block">
+          <h2>Reasoning</h2>
+          <pre id="reasoning" class="panel"></pre>
+        </div>
 
-    <h2>Reasoning</h2>
-    <pre id="reasoning" class="panel"></pre>
+        <div class="block">
+          <h2>Response</h2>
+          <pre id="output" class="panel"></pre>
+        </div>
 
-    <h2>Response</h2>
-    <pre id="output" class="panel"></pre>
+        <div class="block">
+          <h2>Tool activity</h2>
+          <div id="tool-log" class="panel"></div>
+        </div>
 
-    <h2>Tool activity</h2>
-    <div id="tool-log" class="panel"></div>
-
-    <h2>Usage</h2>
-    <div id="usage" class="panel"></div>
+        <div class="block">
+          <h2>Usage</h2>
+          <div id="usage" class="panel"></div>
+        </div>
+      </section>
+    </main>
 
     <script type="module" src="app.js"></script>
   </body>
