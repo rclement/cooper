@@ -323,4 +323,177 @@ mod tests {
 
         assert_eq!(err, "missing argument: path");
     }
+
+    #[tokio::test]
+    async fn readfiletool_execute_invalid_path() {
+        let args = HashMap::from([("path".to_string(), "/nonexistent/path/to/file".to_string())]);
+        let err = ReadFileTool.execute(&args).await.unwrap_err();
+
+        assert!(err.contains("No such file or directory"));
+    }
+
+    #[tokio::test]
+    async fn listfilestool_execute_invalid_path() {
+        let args = HashMap::from([("path".to_string(), "/nonexistent/path/to/dir".to_string())]);
+        let err = ListFilesTool.execute(&args).await.unwrap_err();
+
+        assert!(err.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn execcmdtool_schema_success() {
+        let expected = ToolSchema {
+            name: "exec_cmd".to_string(),
+            description: "Execute a shell command".to_string(),
+            parameters: HashMap::from([(
+                "command".to_string(),
+                ToolParameterSchema {
+                    param_type: ToolParameterTypeSchema::String,
+                    description: "Shell command to execute".to_string(),
+                    required: true,
+                },
+            )]),
+        };
+
+        let schema = ExecCmdTool.schema();
+
+        assert_eq!(schema, expected);
+    }
+
+    #[tokio::test]
+    async fn execcmdtool_execute_success() {
+        let args = HashMap::from([("command".to_string(), "echo hello".to_string())]);
+        let result = ExecCmdTool.execute(&args).await.unwrap();
+
+        assert_eq!(result, "hello\n");
+    }
+
+    #[tokio::test]
+    async fn execcmdtool_execute_missing_command() {
+        let args = HashMap::new();
+        let err = ExecCmdTool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "missing argument: command");
+    }
+
+    #[tokio::test]
+    async fn execcmdtool_execute_failure() {
+        let args = HashMap::from([(
+            "command".to_string(),
+            "echo failed 1>&2; exit 1".to_string(),
+        )]);
+        let err = ExecCmdTool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "exit code: 1, error: failed\n");
+    }
+
+    #[test]
+    fn customtool_schema_success() {
+        let parameters = HashMap::from([(
+            "name".to_string(),
+            ToolParameterSchema {
+                param_type: ToolParameterTypeSchema::String,
+                description: "A name".to_string(),
+                required: true,
+            },
+        )]);
+        let tool = CustomTool::new("greet", "Greet someone", &parameters, &[]);
+
+        let expected = ToolSchema {
+            name: "greet".to_string(),
+            description: "Greet someone".to_string(),
+            parameters,
+        };
+
+        assert_eq!(tool.schema(), expected);
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_success_with_param_substitution() {
+        let parameters = HashMap::from([(
+            "name".to_string(),
+            ToolParameterSchema {
+                param_type: ToolParameterTypeSchema::String,
+                description: "A name".to_string(),
+                required: true,
+            },
+        )]);
+        let commands = vec![vec!["echo".to_string(), "hello ${name}".to_string()]];
+        let tool = CustomTool::new("greet", "Greet someone", &parameters, &commands);
+
+        let args = HashMap::from([("name".to_string(), "world".to_string())]);
+        let result = tool.execute(&args).await.unwrap();
+
+        assert_eq!(result, "hello world\n");
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_pipeline_success() {
+        let commands = vec![
+            vec!["echo".to_string(), "hello world".to_string()],
+            vec![
+                "cut".to_string(),
+                "-d".to_string(),
+                " ".to_string(),
+                "-f2".to_string(),
+            ],
+        ];
+        let tool = CustomTool::new("pipeline", "Pipeline test", &HashMap::new(), &commands);
+
+        let args = HashMap::new();
+        let result = tool.execute(&args).await.unwrap();
+
+        assert_eq!(result, "world\n");
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_missing_required_arg() {
+        let parameters = HashMap::from([(
+            "name".to_string(),
+            ToolParameterSchema {
+                param_type: ToolParameterTypeSchema::String,
+                description: "A name".to_string(),
+                required: true,
+            },
+        )]);
+        let commands = vec![vec!["echo".to_string(), "${name}".to_string()]];
+        let tool = CustomTool::new("greet", "Greet someone", &parameters, &commands);
+
+        let args = HashMap::new();
+        let err = tool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "missing required argument: name");
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_command_not_found() {
+        let commands = vec![vec!["nonexistent-binary-xyz".to_string()]];
+        let tool = CustomTool::new("bad", "Bad command", &HashMap::new(), &commands);
+
+        let args = HashMap::new();
+        let err = tool.execute(&args).await.unwrap_err();
+
+        assert!(err.contains("No such file or directory"));
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_failure_exit_code() {
+        let commands = vec![vec!["false".to_string()]];
+        let tool = CustomTool::new("fail", "Fails", &HashMap::new(), &commands);
+
+        let args = HashMap::new();
+        let err = tool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "exit code: 1, error: ");
+    }
+
+    #[tokio::test]
+    async fn customtool_execute_no_commands() {
+        let tool = CustomTool::new("empty", "No commands", &HashMap::new(), &[]);
+
+        let args = HashMap::new();
+        let err = tool.execute(&args).await.unwrap_err();
+
+        assert_eq!(err, "");
+    }
 }
