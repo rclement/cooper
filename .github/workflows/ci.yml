@@ -31,9 +31,9 @@ jobs:
 
       - name: Test with coverage
         run: |
-          cargo llvm-cov --all-targets --no-report
-          cargo llvm-cov report --json --summary-only --output-path coverage.json
-          cargo llvm-cov report --cobertura --output-path cobertura.xml
+          cargo cov --all-targets --no-report
+          cargo cov report --json --summary-only --output-path coverage.json
+          cargo cov report --cobertura --output-path cobertura.xml
 
       - uses: actions/upload-artifact@v4
         with:
