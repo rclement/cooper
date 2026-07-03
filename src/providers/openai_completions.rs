@@ -440,3 +440,462 @@ impl Provider for OpenAICompletionsAPI {
         Ok((new_message, finish_reason))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ToolParameterSchema;
+    use std::collections::HashMap;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Records callbacks from `complete_stream` so tests can assert on
+    /// streamed chunks and completion usage without touching stdout.
+    #[derive(Default)]
+    struct SpyHandler {
+        text_chunks: std::sync::Mutex<Vec<String>>,
+        reasoning_chunks: std::sync::Mutex<Vec<String>>,
+        usages: std::sync::Mutex<Vec<(u64, u64, u64)>>,
+    }
+
+    impl AgentEventsHandler for SpyHandler {
+        fn on_chunk(&self, chunk: &AgentMessageChunk) {
+            if let Some(t) = &chunk.text {
+                self.text_chunks.lock().unwrap().push(t.clone());
+            }
+            if let Some(r) = &chunk.reasoning {
+                self.reasoning_chunks.lock().unwrap().push(r.clone());
+            }
+        }
+
+        fn on_complete(&self, usage: &Usage) {
+            self.usages.lock().unwrap().push((
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+            ));
+        }
+    }
+
+    /// Joins raw SSE `data:` payloads (without the trailing `[DONE]`) into a
+    /// single response body, mirroring what an OpenAI-compatible server sends.
+    fn sse_body(data_lines: &[&str]) -> String {
+        let mut body = String::new();
+        for line in data_lines {
+            body.push_str("data: ");
+            body.push_str(line);
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    async fn mock_server_with_body(body: String) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(body, "text/event-stream")
+                    .append_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[test]
+    fn get_tool_param_type_maps_all_variants() {
+        assert_eq!(
+            get_tool_param_type(&ToolParameterTypeSchema::String),
+            "string"
+        );
+        assert_eq!(
+            get_tool_param_type(&ToolParameterTypeSchema::Number),
+            "number"
+        );
+        assert_eq!(
+            get_tool_param_type(&ToolParameterTypeSchema::Boolean),
+            "boolean"
+        );
+    }
+
+    #[test]
+    fn api_message_from_system_message() {
+        let api_message = ApiMessage::from(&Message::System("sys prompt".to_string()));
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({"role": "system", "content": "sys prompt"})
+        );
+    }
+
+    #[test]
+    fn api_message_from_user_message() {
+        let api_message = ApiMessage::from(&Message::User("hi there".to_string()));
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({"role": "user", "content": "hi there"})
+        );
+    }
+
+    #[test]
+    fn api_message_from_assistant_without_tool_calls() {
+        let message = Message::Assistant {
+            text: Some("answer".to_string()),
+            reasoning: Some("thinking".to_string()),
+            tool_calls: vec![],
+        };
+        let api_message = ApiMessage::from(&message);
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({"role": "assistant", "content": "answer", "reasoning": "thinking"})
+        );
+    }
+
+    #[test]
+    fn api_message_from_assistant_with_tool_calls() {
+        let message = Message::Assistant {
+            text: None,
+            reasoning: None,
+            tool_calls: vec![ToolCall {
+                id: "call-1".to_string(),
+                name: "echo".to_string(),
+                arguments: HashMap::from([("msg".to_string(), "hi".to_string())]),
+            }],
+        };
+        let api_message = ApiMessage::from(&message);
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(value["role"], "assistant");
+        assert!(value.get("content").is_none());
+        assert_eq!(value["tool_calls"][0]["id"], "call-1");
+        assert_eq!(value["tool_calls"][0]["type"], "function");
+        assert_eq!(value["tool_calls"][0]["function"]["name"], "echo");
+        assert_eq!(
+            value["tool_calls"][0]["function"]["arguments"],
+            "{\"msg\":\"hi\"}"
+        );
+    }
+
+    #[test]
+    fn api_message_from_tool_ok_result() {
+        let message = Message::Tool {
+            call_id: "call-1".to_string(),
+            result: Ok("output".to_string()),
+        };
+        let api_message = ApiMessage::from(&message);
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({"role": "tool", "content": "output", "tool_call_id": "call-1"})
+        );
+    }
+
+    #[test]
+    fn api_message_from_tool_err_result() {
+        let message = Message::Tool {
+            call_id: "call-1".to_string(),
+            result: Err("boom".to_string()),
+        };
+        let api_message = ApiMessage::from(&message);
+        let value = serde_json::to_value(&api_message).unwrap();
+
+        assert_eq!(value["content"], "Error: boom");
+    }
+
+    #[test]
+    fn api_tool_from_schema() {
+        let schema = ToolSchema {
+            name: "get_weather".to_string(),
+            description: "Get the weather".to_string(),
+            parameters: HashMap::from([
+                (
+                    "city".to_string(),
+                    ToolParameterSchema {
+                        param_type: ToolParameterTypeSchema::String,
+                        description: "City name".to_string(),
+                        required: true,
+                    },
+                ),
+                (
+                    "days".to_string(),
+                    ToolParameterSchema {
+                        param_type: ToolParameterTypeSchema::Number,
+                        description: "Forecast days".to_string(),
+                        required: false,
+                    },
+                ),
+            ]),
+        };
+
+        let api_tool = ApiTool::from(&schema);
+        let value = serde_json::to_value(&api_tool).unwrap();
+
+        assert_eq!(value["type"], "function");
+        assert_eq!(value["function"]["name"], "get_weather");
+        assert_eq!(value["function"]["parameters"]["type"], "object");
+        assert_eq!(
+            value["function"]["parameters"]["properties"]["city"]["type"],
+            "string"
+        );
+        assert_eq!(
+            value["function"]["parameters"]["properties"]["days"]["type"],
+            "number"
+        );
+        assert_eq!(
+            value["function"]["parameters"]["required"],
+            serde_json::json!(["city"])
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_stream_returns_text_and_usage_on_stop() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match message {
+            Message::Assistant {
+                text,
+                reasoning,
+                tool_calls,
+            } => {
+                assert_eq!(text.as_deref(), Some("Hello"));
+                assert_eq!(reasoning, None);
+                assert!(tool_calls.is_empty());
+            }
+            _ => panic!("expected assistant message"),
+        }
+        assert!(matches!(finish_reason, FinishReason::Stop));
+        assert_eq!(
+            *handler.text_chunks.lock().unwrap(),
+            vec!["Hello".to_string()]
+        );
+        assert_eq!(*handler.usages.lock().unwrap(), vec![(10, 5, 15)]);
+    }
+
+    #[tokio::test]
+    async fn complete_stream_captures_reasoning_field() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":"thinking...","reasoning_content":null,"tool_calls":null},"finish_reason":"stop"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, _) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match message {
+            Message::Assistant { reasoning, .. } => {
+                assert_eq!(reasoning.as_deref(), Some("thinking..."))
+            }
+            _ => panic!("expected assistant message"),
+        }
+        assert_eq!(
+            *handler.reasoning_chunks.lock().unwrap(),
+            vec!["thinking...".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_stream_falls_back_to_reasoning_content_field() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":"thinking2","tool_calls":null},"finish_reason":"stop"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, _) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match message {
+            Message::Assistant { reasoning, .. } => {
+                assert_eq!(reasoning.as_deref(), Some("thinking2"))
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stream_accumulates_tool_call_across_deltas() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call-1","function":{"name":"get_weather","arguments":null}}]},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":null,"function":{"name":null,"arguments":"{\"loc"}}]},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":null,"function":{"name":null,"arguments":"\":\"paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        assert!(matches!(finish_reason, FinishReason::ToolCalls));
+        match message {
+            Message::Assistant { tool_calls, .. } => {
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].id, "call-1");
+                assert_eq!(tool_calls[0].name, "get_weather");
+                assert_eq!(
+                    tool_calls[0].arguments,
+                    HashMap::from([("loc".to_string(), "paris".to_string())])
+                );
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stream_errors_when_tool_call_arguments_are_not_a_string_map() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call-1","function":{"name":"get_weather","arguments":"{\"count\":5}"}}]},"finish_reason":"tool_calls"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let result = api.complete_stream(&[], &[], &handler).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn complete_stream_maps_function_call_finish_reason_to_tool_calls() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"function_call"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (_, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        assert!(matches!(finish_reason, FinishReason::ToolCalls));
+    }
+
+    #[tokio::test]
+    async fn complete_stream_maps_length_finish_reason() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"length"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (_, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        assert!(matches!(finish_reason, FinishReason::Length));
+    }
+
+    #[tokio::test]
+    async fn complete_stream_maps_unrecognized_finish_reason() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"content_filter"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (_, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match finish_reason {
+            FinishReason::Unknown(s) => assert_eq!(s, "content_filter"),
+            _ => panic!("expected unknown finish reason"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stream_defaults_to_unknown_when_no_finish_reason_sent() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":"hi","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (_, finish_reason) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match finish_reason {
+            FinishReason::Unknown(s) => assert_eq!(s, "none"),
+            _ => panic!("expected unknown finish reason"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stream_errors_on_http_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let result = api.complete_stream(&[], &[], &handler).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn complete_stream_errors_when_stream_ends_without_done_marker() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"data: {"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":"hi","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#.to_string() + "\n\n",
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let result = api.complete_stream(&[], &[], &handler).await;
+
+        match result {
+            Err(e) => assert_eq!(e.to_string(), "stream ended without [Done]"),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stream_errors_on_malformed_json_chunk() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: not-json\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let result = api.complete_stream(&[], &[], &handler).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn complete_stream_errors_on_connection_failure() {
+        let api = OpenAICompletionsAPI::new("http://127.0.0.1:1", "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let result = api.complete_stream(&[], &[], &handler).await;
+
+        assert!(result.is_err());
+    }
+}
