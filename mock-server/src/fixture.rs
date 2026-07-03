@@ -43,7 +43,14 @@ pub struct FixtureUsage {
 impl Fixture {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
-        let fixture: Fixture = serde_yaml::from_str(&content)?;
+        Self::from_yaml_str(&content)
+    }
+
+    /// Parses a fixture directly from a YAML string, for callers that need
+    /// to build one at runtime (e.g. e2e tests interpolating a dynamic URL)
+    /// rather than loading a file from `fixtures/`.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let fixture: Fixture = serde_yaml::from_str(yaml)?;
         Ok(fixture)
     }
 }
@@ -83,6 +90,14 @@ responses:
         assert_eq!(fixture.responses.len(), 1);
         assert_eq!(fixture.responses[0].text.as_deref(), Some("PONG"));
         assert_eq!(fixture.responses[0].finish_reason(), "stop");
+    }
+
+    #[test]
+    fn from_yaml_str_parses_minimal_fixture() {
+        let fixture = Fixture::from_yaml_str("responses:\n  - text: \"PONG\"\n").unwrap();
+
+        assert_eq!(fixture.responses.len(), 1);
+        assert_eq!(fixture.responses[0].text.as_deref(), Some("PONG"));
     }
 
     #[test]

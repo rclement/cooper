@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "mock-server", "web"]
+members = ["core", "e2e", "mock-server", "web"]
 resolver = "2"
 
 [package]
