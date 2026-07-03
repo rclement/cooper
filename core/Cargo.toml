@@ -7,10 +7,10 @@ edition = "2024"
 name = "cooper_core"
 
 [dependencies]
-askama = { version = "0.16.0", features = ["code-in-doc"] }
 async-trait = "0.1.89"
 chrono = "0.4.44"
 futures-util = "0.3.32"
+minijinja = "2.21.0"
 reqwest = { version = "0.13.4", features = ["json", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

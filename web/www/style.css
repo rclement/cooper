@@ -116,6 +116,131 @@ body {
   display: flex;
 }
 
+#view-sessions {
+  max-width: 74rem;
+}
+
+.session-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+}
+
+.session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.context-panel {
+  width: 20rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  position: sticky;
+  top: 2.5rem;
+}
+
+.context-section {
+  border: 1px solid var(--border);
+  border-radius: 0.6em;
+  background: var(--surface);
+  padding: 0.9em 1em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.context-section h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.context-section .hint {
+  margin: 0;
+  max-width: none;
+}
+
+.context-section .hint code {
+  font-family: var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.3em;
+  padding: 0.05em 0.3em;
+  font-size: 0.95em;
+}
+
+.context-section textarea {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.context-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.context-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4em;
+  padding: 0.4em 0.6em;
+}
+
+.context-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.context-file-path {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-file-status {
+  font-size: 0.72em;
+  color: var(--text-dim);
+}
+
+.context-file-status.is-error {
+  color: #e08585;
+}
+
+.add-context-file-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-context-file-form input {
+  flex: 1;
+  font-size: 0.82rem;
+}
+
+.add-context-file-form button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  padding: 0.5em 0.9em;
+  flex-shrink: 0;
+}
+
 .config {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -587,10 +712,20 @@ details:not([open]) > .block-body {
   color: var(--text-dim);
 }
 
+@media (max-width: 60rem) {
+  .session-layout {
+    flex-direction: column;
+  }
+
+  .context-panel {
+    width: 100%;
+    position: static;
+  }
+}
+
 @media (max-width: 40rem) {
   .config,
-  .provider-fields,
-  .output-grid {
+  .provider-fields {
     grid-template-columns: 1fr;
   }
   .add-provider-form {

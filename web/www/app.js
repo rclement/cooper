@@ -1,6 +1,7 @@
 // Main-thread UI glue: wires the form to the agent Worker and renders the
 // events it streams back. No framework, no build step.
 import { initSettings, getCurrentConfig } from "./settings.js";
+import { initContext, getContextConfig } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
 
 const worker = new Worker("worker.js", { type: "module" });
@@ -8,6 +9,7 @@ const worker = new Worker("worker.js", { type: "module" });
 const $ = (id) => document.getElementById(id);
 
 initSettings();
+initContext();
 
 for (const navItem of document.querySelectorAll(".nav-item")) {
   navItem.addEventListener("click", () => {
@@ -152,11 +154,18 @@ worker.onmessage = (message) => {
 };
 
 $("run").addEventListener("click", () => {
-  const config = getCurrentConfig();
-  if (!config) {
+  const providerConfig = getCurrentConfig();
+  if (!providerConfig) {
     $("status").textContent = "error: configure a provider and model first";
     return;
   }
+  const contextConfig = getContextConfig();
+  const config = {
+    ...providerConfig,
+    system_prompt_template: contextConfig.systemPromptTemplate,
+    agent_instructions: contextConfig.agentInstructions,
+    context_files: contextConfig.contextFiles,
+  };
   const prompt = $("prompt").value;
 
   $("timeline").innerHTML = "";
