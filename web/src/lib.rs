@@ -136,6 +136,12 @@ impl AgentEventsHandler for JsEventHandler {
             result: tool_result.clone(),
         });
     }
+
+    fn on_system_prompt(&self, system_prompt: &str) {
+        self.emit(&EventDto::SystemPrompt {
+            text: system_prompt.to_string(),
+        });
+    }
 }
 
 #[derive(Serialize)]
@@ -159,6 +165,9 @@ enum EventDto {
     },
     ToolResult {
         result: Result<String, String>,
+    },
+    SystemPrompt {
+        text: String,
     },
 }
 

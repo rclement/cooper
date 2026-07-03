@@ -28,6 +28,7 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
 // preview; a new block starts whenever the event type changes, so each
 // turn's reasoning/response/tool-call naturally gets its own block.
 const BLOCK_KIND = {
+  context: { label: "Context", icon: "▤", collapsible: true },
   reasoning: { label: "Reasoning", icon: "◌", collapsible: true },
   response: { label: "Response", icon: "◆", collapsible: false },
   tool: { label: "Tool", icon: "⚙", collapsible: true },
@@ -72,6 +73,13 @@ function openBlock(type) {
   $("timeline").appendChild(el);
 
   current = { type, body, preview, raw: "" };
+}
+
+function appendSystemPrompt(text) {
+  openBlock("context");
+  current.body.textContent = text;
+  current.preview.textContent = `${text.length.toLocaleString()} chars`;
+  current.type = null; // one-shot; next event starts a fresh block
 }
 
 function appendReasoning(text) {
@@ -124,6 +132,9 @@ function appendUsage(event) {
 
 function handleEvent(event) {
   switch (event.type) {
+    case "system_prompt":
+      appendSystemPrompt(event.text);
+      break;
     case "chunk":
       if (event.reasoning) appendReasoning(event.reasoning);
       if (event.text) appendResponse(event.text);

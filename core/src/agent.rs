@@ -127,6 +127,10 @@ pub trait AgentEventsHandler {
     fn on_complete(&self, _usage: &Usage) {}
     fn on_tool_call(&self, _tool_call: &ToolCall) {}
     fn on_tool_result(&self, _tool_result: &Result<String, String>) {}
+    /// Called once per `agent_loop_stream` call, with the fully rendered
+    /// system prompt, before the first request is sent — lets callers show
+    /// the user exactly what context the agent is running with.
+    fn on_system_prompt(&self, _system_prompt: &str) {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,6 +152,7 @@ pub async fn agent_loop_stream(
         context_files,
         current_working_dir.as_deref(),
     )?;
+    handler.on_system_prompt(&system_prompt);
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),
@@ -243,6 +248,7 @@ mod tests {
         tool_calls: Mutex<Vec<String>>,
         tool_results: Mutex<Vec<Result<String, String>>>,
         completes: Mutex<u32>,
+        system_prompts: Mutex<Vec<String>>,
     }
 
     impl AgentEventsHandler for SpyHandler {
@@ -258,6 +264,13 @@ mod tests {
 
         fn on_tool_result(&self, tool_result: &Result<String, String>) {
             self.tool_results.lock().unwrap().push(tool_result.clone());
+        }
+
+        fn on_system_prompt(&self, system_prompt: &str) {
+            self.system_prompts
+                .lock()
+                .unwrap()
+                .push(system_prompt.to_string());
         }
     }
 
@@ -357,6 +370,33 @@ mod tests {
             Message::Assistant { text, .. } => assert_eq!(text.as_deref(), Some("done")),
             _ => panic!("expected assistant message"),
         }
+    }
+
+    #[tokio::test]
+    async fn agent_loop_stream_reports_system_prompt_before_first_completion() {
+        let provider = MockProvider::new(vec![Box::new(|| {
+            Ok((assistant_text("done"), FinishReason::Stop))
+        })]);
+        let handler = SpyHandler::default();
+
+        agent_loop_stream(
+            "hello",
+            None,
+            Some("Be concise.".to_string()),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &provider,
+            &handler,
+        )
+        .await
+        .unwrap();
+
+        let system_prompts = handler.system_prompts.lock().unwrap();
+        assert_eq!(system_prompts.len(), 1);
+        assert!(
+            system_prompts[0].contains("<agent-instructions>\nBe concise.\n</agent-instructions>")
+        );
     }
 
     #[tokio::test]
