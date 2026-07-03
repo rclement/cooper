@@ -5,8 +5,6 @@ use askama::Template;
 use crate::providers::Provider;
 use crate::tools;
 
-/// === system prompt === ///
-
 /// ```askama
 /// You are agent Cooper, a special AI agent harness.
 ///
@@ -55,8 +53,6 @@ fn build_system_prompt(
     template.render()
 }
 
-/// === agent message types === ///
-
 #[derive(Clone)]
 pub struct ToolCall {
     pub id: String,
@@ -91,8 +87,6 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
-/// === agent event handler === ///
-
 pub struct AgentMessageChunk {
     pub text: Option<String>,
     pub reasoning: Option<String>,
@@ -104,8 +98,6 @@ pub trait AgentEventsHandler: Send + Sync {
     fn on_tool_call(&self, _tool_call: &ToolCall) {}
     fn on_tool_result(&self, _tool_result: &Result<String, String>) {}
 }
-
-/// === agentic loop with tool calling (streaming) === ///
 
 pub async fn agent_loop_stream(
     user_prompt: &str,

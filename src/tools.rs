@@ -1,7 +1,5 @@
 use std::{collections::HashMap, process};
 
-/// === tool type definitions === ///
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolParameterTypeSchema {
     String,
@@ -28,8 +26,6 @@ pub trait Tool {
     fn schema(&self) -> ToolSchema;
     async fn execute(&self, args: &HashMap<String, String>) -> Result<String, String>;
 }
-
-/// === built-in tools definitions === ///
 
 pub struct ListFilesTool;
 
