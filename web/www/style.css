@@ -578,6 +578,12 @@ details:not([open]) > .block-body {
   display: none;
 }
 
+/* Context: the fully rendered system prompt, collapsed by default. */
+.block-context .block-label,
+.block-context .block-icon {
+  color: #7ba7d4;
+}
+
 /* Reasoning: muted, collapsed by default (no [open] attribute in markup). */
 .block-reasoning {
   border-style: dashed;
