@@ -1,6 +1,7 @@
 // Main-thread UI glue: wires the form to the agent Worker and renders the
 // events it streams back. No framework, no build step.
 import { initSettings, getCurrentConfig } from "./settings.js";
+import { renderMarkdown } from "./markdown.js";
 
 const worker = new Worker("worker.js", { type: "module" });
 
@@ -30,7 +31,7 @@ const BLOCK_KIND = {
   tool: { label: "Tool", icon: "⚙", collapsible: true },
 };
 
-let current = { type: null, body: null, preview: null };
+let current = { type: null, body: null, preview: null, raw: "" };
 
 function truncate(text, max = 90) {
   const clean = text.replace(/\s+/g, " ").trim();
@@ -68,7 +69,7 @@ function openBlock(type) {
   el.append(header, body);
   $("timeline").appendChild(el);
 
-  current = { type, body, preview };
+  current = { type, body, preview, raw: "" };
 }
 
 function appendReasoning(text) {
@@ -79,7 +80,8 @@ function appendReasoning(text) {
 
 function appendResponse(text) {
   if (current.type !== "response") openBlock("response");
-  current.body.textContent += text;
+  current.raw += text;
+  current.body.innerHTML = renderMarkdown(current.raw);
 }
 
 function appendToolCall(event) {

@@ -475,6 +475,85 @@ details:not([open]) > .block-body {
 
 .block-response .block-body {
   padding-top: 0.1em;
+  font-family: inherit;
+  white-space: normal;
+}
+
+.block-response .block-body > *:first-child {
+  margin-top: 0;
+}
+
+.block-response .block-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.block-response .block-body p {
+  margin: 0.6em 0;
+}
+
+.block-response .block-body h1,
+.block-response .block-body h2,
+.block-response .block-body h3 {
+  margin: 0.8em 0 0.4em;
+  font-size: 1em;
+  color: var(--text);
+}
+
+.block-response .block-body ul,
+.block-response .block-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+
+.block-response .block-body li {
+  margin: 0.2em 0;
+}
+
+.block-response .block-body code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.3em;
+  padding: 0.1em 0.35em;
+}
+
+.block-response .block-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  padding: 0.7em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+
+.block-response .block-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.block-response .block-body a {
+  color: var(--accent);
+}
+
+.block-response .block-body table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.9em;
+  width: 100%;
+}
+
+.block-response .block-body th,
+.block-response .block-body td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+
+.block-response .block-body th {
+  color: var(--text-dim);
+  font-weight: 600;
 }
 
 /* Tool activity: collapsed by default, distinct accent color. */
