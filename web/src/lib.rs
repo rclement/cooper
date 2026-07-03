@@ -127,6 +127,25 @@ impl WasmAgent {
         self.messages.borrow_mut().clear();
     }
 
+    /// Snapshots the conversation history as JSON, so the caller can persist
+    /// it (e.g. to IndexedDB) and later restore it with `import_history` to
+    /// resume this session — even across a page reload, where this
+    /// `WasmAgent` instance itself doesn't survive.
+    pub fn export_history(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&*self.messages.borrow())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Replaces the conversation history with a previously exported
+    /// snapshot, so the next `run_prompt` call continues that conversation
+    /// instead of starting a new one.
+    pub fn import_history(&self, history_json: &str) -> Result<(), JsValue> {
+        let messages: Vec<Message> =
+            serde_json::from_str(history_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        *self.messages.borrow_mut() = messages;
+        Ok(())
+    }
+
     /// Registers a tool available for the agent to call. `schema_json` must
     /// match `ToolSchema`'s JSON shape: `{ name, description, parameters:
     /// { <param>: { type, description, required } } }`. `execute_fn` is

@@ -34,39 +34,7 @@ pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// `load()` resolves its path from the `HOME` env var (via `dirs::home_dir`),
-    /// which is process-global, so tests that override it must not run concurrently.
-    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Points `HOME` at a fresh temp dir for the duration of the guard, restoring
-    /// the previous value on drop.
-    struct HomeEnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        previous: Option<String>,
-    }
-
-    impl HomeEnvGuard {
-        fn set(path: &std::path::Path) -> Self {
-            let lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var("HOME").ok();
-            unsafe { std::env::set_var("HOME", path) };
-            HomeEnvGuard {
-                _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for HomeEnvGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(v) => unsafe { std::env::set_var("HOME", v) },
-                None => unsafe { std::env::remove_var("HOME") },
-            }
-        }
-    }
+    use crate::test_support::HomeEnvGuard;
 
     #[test]
     fn load_parses_valid_settings_file() {

@@ -3,6 +3,7 @@
 import { initSettings, getCurrentConfig } from "./settings.js";
 import { initContext, getContextConfig, getEnabledToolNames } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
+import { saveSession, listSessions, deleteSession } from "./sessions.js";
 
 const worker = new Worker("worker.js", { type: "module" });
 
@@ -172,6 +173,39 @@ function handleEvent(event) {
   }
 }
 
+// A session spans multiple prompt/response turns sharing one conversation
+// history. `currentSession` is null when the next Run click should start a
+// fresh one; otherwise it's the record being built up (or resumed). The
+// only persisted payload is `history` — the wasm-exported `Vec<Message>`
+// JSON, the same structure `agent_loop_stream` threads through the CLI's
+// `chat` command. It's already the right granularity to persist: one entry
+// per message (system/user/assistant/tool), never per streamed SSE delta —
+// unlike an earlier version of this file, which recorded the *live* event
+// stream (including every chunk) into its own separate log and had to
+// special-case coalescing consecutive chunks back together. Using the same
+// history the agent loop already produces sidesteps that class of bug
+// entirely, and means a saved session's timeline is reconstructed with
+// `renderHistory` below rather than replayed event-by-event.
+let currentSession = null;
+
+function uid() {
+  return crypto.randomUUID();
+}
+
+function clearTimeline() {
+  $("timeline").innerHTML = "";
+  current = { type: null, body: null, preview: null, raw: "", icon: null };
+}
+
+function startNewSession() {
+  currentSession = null;
+  clearTimeline();
+  $("status").textContent = "";
+  renderSessionList();
+}
+
+$("new-session").addEventListener("click", startNewSession);
+
 worker.onmessage = (message) => {
   const msg = message.data;
   if (msg.type === "event") {
@@ -180,27 +214,22 @@ worker.onmessage = (message) => {
     stopPulse();
     $("status").textContent = "done";
     $("run").disabled = false;
+    if (currentSession) {
+      currentSession.updatedAt = Date.now();
+      currentSession.history = msg.history;
+      saveSession(currentSession).then(renderSessionList);
+    }
   } else if (msg.type === "error") {
     stopPulse();
     $("status").textContent = `error: ${msg.error}`;
     $("run").disabled = false;
+    if (currentSession && msg.history) {
+      currentSession.updatedAt = Date.now();
+      currentSession.history = msg.history;
+      saveSession(currentSession).then(renderSessionList);
+    }
   }
 };
-
-// A session spans multiple prompt/response turns sharing one conversation
-// history (kept on the wasm side). `sessionActive` tracks whether the next
-// Run click is a follow-up turn (append to the timeline) or the start of a
-// new session (clear it and tell the worker to build a fresh WasmAgent).
-let sessionActive = false;
-
-function startNewSession() {
-  sessionActive = false;
-  $("timeline").innerHTML = "";
-  current = { type: null, body: null, preview: null, raw: "", icon: null };
-  $("status").textContent = "";
-}
-
-$("new-session").addEventListener("click", startNewSession);
 
 $("run").addEventListener("click", () => {
   const prompt = $("prompt").value.trim();
@@ -219,17 +248,147 @@ $("run").addEventListener("click", () => {
     context_files: contextConfig.contextFiles,
   };
   const enabledTools = getEnabledToolNames();
-  const newSession = !sessionActive;
+  const newSession = !currentSession;
 
   if (newSession) {
-    $("timeline").innerHTML = "";
-    current = { type: null, body: null, preview: null, raw: "", icon: null };
+    clearTimeline();
+    currentSession = {
+      id: uid(),
+      title: prompt.slice(0, 80),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      providerName: providerConfig.providerName,
+      providerId: providerConfig.providerId,
+      model: providerConfig.model,
+      history: null,
+    };
   }
+
   appendPrompt(prompt);
   $("status").textContent = "running…";
   $("run").disabled = true;
   $("prompt").value = "";
 
-  worker.postMessage({ prompt, config, enabledTools, newSession });
-  sessionActive = true;
+  worker.postMessage({
+    prompt,
+    config,
+    enabledTools,
+    newSession,
+    restoreHistory: newSession ? null : currentSession.history,
+  });
 });
+
+// --- Past sessions: list, load (replay + resume), delete ---
+
+function formatRelativeTime(ms) {
+  const seconds = Math.round((Date.now() - ms) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+// Reconstructs the timeline from a session's persisted `Vec<Message>`
+// history — the exact JSON shape `WasmAgent::export_history` produces
+// (externally-tagged: `{ System: "..." }`, `{ User: "..." }`, `{ Assistant:
+// { text, reasoning, tool_calls } }`, `{ Tool: { call_id, result } }`).
+// Since it's message-level, not delta-level, this always renders one block
+// per message regardless of how many SSE chunks the model streamed it in.
+function renderHistory(historyJson) {
+  const messages = JSON.parse(historyJson);
+  for (const message of messages) {
+    if (message.System !== undefined) {
+      appendSystemPrompt(message.System);
+    } else if (message.User !== undefined) {
+      appendPrompt(message.User);
+    } else if (message.Assistant !== undefined) {
+      const { text, reasoning, tool_calls } = message.Assistant;
+      if (reasoning) appendReasoning(reasoning);
+      if (text) appendResponse(text);
+      for (const toolCall of tool_calls) {
+        appendToolCall(toolCall);
+      }
+    } else if (message.Tool !== undefined) {
+      appendToolResult({ result: message.Tool.result });
+    }
+  }
+}
+
+function loadSession(session) {
+  currentSession = session;
+  clearTimeline();
+  if (session.history) renderHistory(session.history);
+
+  // Point the config UI at the provider/model this session used, so
+  // continuing the conversation reuses the same connection. If that
+  // provider was since removed, leave the current selection as-is — the
+  // status message flags it so the user can pick a replacement.
+  const providerSelect = $("provider-select");
+  providerSelect.value = session.providerId;
+  providerSelect.dispatchEvent(new Event("change"));
+  const modelSelect = $("model-select");
+  modelSelect.value = session.model;
+  modelSelect.dispatchEvent(new Event("change"));
+
+  $("status").textContent =
+    providerSelect.value === session.providerId
+      ? "loaded session — continue chatting or start a new one"
+      : `loaded session — original provider "${session.providerName}" is no longer configured`;
+
+  renderSessionList();
+}
+
+async function renderSessionList() {
+  const container = $("session-list");
+  const sessions = await listSessions();
+
+  container.innerHTML = "";
+  if (sessions.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No saved sessions yet.";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const session of sessions) {
+    const item = document.createElement("div");
+    item.className =
+      "session-item" + (session.id === currentSession?.id ? " is-active" : "");
+    item.addEventListener("click", () => loadSession(session));
+
+    const info = document.createElement("div");
+    info.className = "session-item-info";
+
+    const title = document.createElement("div");
+    title.className = "session-item-title";
+    title.textContent = session.title || "(empty prompt)";
+
+    const meta = document.createElement("div");
+    meta.className = "session-item-meta";
+    meta.textContent = `${formatRelativeTime(session.updatedAt)} · ${session.model}`;
+
+    info.append(title, meta);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "session-item-delete";
+    deleteBtn.textContent = "✕";
+    deleteBtn.title = "Delete session";
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!confirm(`Delete session "${session.title}"?`)) return;
+      await deleteSession(session.id);
+      if (currentSession?.id === session.id) startNewSession();
+      else renderSessionList();
+    });
+
+    item.append(info, deleteBtn);
+    container.appendChild(item);
+  }
+}
+
+renderSessionList();

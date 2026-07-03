@@ -58,6 +58,10 @@ export function getCurrentConfig() {
     base_url: provider.baseUrl,
     api_key: provider.apiKey,
     model: settings.defaultModel,
+    // Not sent to the agent — for the caller to attach to session metadata
+    // without persisting the API key itself.
+    providerId: provider.id,
+    providerName: provider.name,
   };
 }
 
