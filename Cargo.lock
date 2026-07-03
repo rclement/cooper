@@ -6,19 +6,14 @@ version = 4
 name = "agent-cooper"
 version = "0.0.0"
 dependencies = [
- "askama",
  "async-trait",
- "chrono",
  "clap",
+ "cooper-core",
  "dirs",
- "futures-util",
- "reqwest",
  "serde",
- "serde_json",
  "serde_yaml",
  "tempfile",
  "tokio",
- "wiremock",
 ]
 
 [[package]]
@@ -331,6 +326,44 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "cooper-core"
+version = "0.0.0"
+dependencies = [
+ "askama",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "cooper-web"
+version = "0.0.0"
+dependencies = [
+ "console_error_panic_hook",
+ "cooper-core",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

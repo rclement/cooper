@@ -372,7 +372,7 @@ async fn process_stream(
     Err("stream ended without [Done]".into())
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for OpenAICompletionsAPI {
     async fn complete_stream(
         &self,

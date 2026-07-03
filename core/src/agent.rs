@@ -26,7 +26,9 @@ use crate::tools;
 ///
 /// Current date: {{ current_date }}
 /// Current time: {{ current_time }}
+/// {%- if let Some(current_working_dir) = current_working_dir %}
 /// Current working directory: {{ current_working_dir }}
+/// {%- endif %}
 /// ```
 #[derive(askama::Template)]
 #[template(ext = "txt", in_doc = true)]
@@ -35,12 +37,16 @@ struct SystemPromptTemplate {
     context_files: HashMap<String, String>,
     current_date: String,
     current_time: String,
-    current_working_dir: String,
+    current_working_dir: Option<String>,
 }
 
+/// `current_working_dir` is caller-supplied rather than resolved here, since
+/// the notion of a working directory doesn't exist in every environment this
+/// core runs in (e.g. a browser tab has no filesystem/cwd).
 fn build_system_prompt(
     agent_instructions: Option<String>,
     context_files: &HashMap<String, String>,
+    current_working_dir: Option<String>,
 ) -> Result<String, askama::Error> {
     let now = chrono::Local::now();
     let template = SystemPromptTemplate {
@@ -48,7 +54,7 @@ fn build_system_prompt(
         context_files: context_files.clone(),
         current_date: now.format("%Y-%m-%d").to_string(),
         current_time: now.format("%H:%M:%S %z").to_string(),
-        current_working_dir: std::env::current_dir()?.display().to_string(),
+        current_working_dir,
     };
     template.render()
 }
@@ -92,7 +98,9 @@ pub struct AgentMessageChunk {
     pub reasoning: Option<String>,
 }
 
-pub trait AgentEventsHandler: Send + Sync {
+/// Not `Send + Sync`: a browser `Provider`/handler may wrap JS-bound values
+/// (e.g. a callback `js_sys::Function`), which are single-threaded only.
+pub trait AgentEventsHandler {
     fn on_chunk(&self, chunk: &AgentMessageChunk);
     fn on_complete(&self, _usage: &Usage) {}
     fn on_tool_call(&self, _tool_call: &ToolCall) {}
@@ -103,13 +111,14 @@ pub async fn agent_loop_stream(
     user_prompt: &str,
     agent_instructions: Option<String>,
     context_files: &HashMap<String, String>,
+    current_working_dir: Option<String>,
     tool_registry: &HashMap<String, Box<dyn tools::Tool>>,
     provider: &dyn Provider,
     handler: &dyn AgentEventsHandler,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt = build_system_prompt(agent_instructions, context_files)?;
+    let system_prompt = build_system_prompt(agent_instructions, context_files, current_working_dir)?;
     let mut messages = vec![
         Message::System(system_prompt),
         Message::User(user_prompt.to_string()),
@@ -175,7 +184,7 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
+    #[async_trait::async_trait(?Send)]
     impl Provider for MockProvider {
         async fn complete_stream(
             &self,
@@ -252,18 +261,25 @@ mod tests {
     fn build_system_prompt_includes_instructions_and_context() {
         let context_files = HashMap::from([("main.rs".to_string(), "fn main() {}".to_string())]);
 
-        let prompt = build_system_prompt(Some("Be concise.".to_string()), &context_files).unwrap();
+        let prompt = build_system_prompt(
+            Some("Be concise.".to_string()),
+            &context_files,
+            Some("/home/user/project".to_string()),
+        )
+        .unwrap();
 
         assert!(prompt.contains("<agent-instructions>\nBe concise.\n</agent-instructions>"));
         assert!(prompt.contains("<file path=\"main.rs\">\nfn main() {}\n</file>"));
+        assert!(prompt.contains("Current working directory: /home/user/project"));
     }
 
     #[test]
     fn build_system_prompt_omits_empty_sections() {
-        let prompt = build_system_prompt(None, &HashMap::new()).unwrap();
+        let prompt = build_system_prompt(None, &HashMap::new(), None).unwrap();
 
         assert!(!prompt.contains("<agent-instructions>"));
         assert!(!prompt.contains("<context>"));
+        assert!(!prompt.contains("Current working directory"));
     }
 
     #[tokio::test]
@@ -277,6 +293,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,
@@ -318,6 +335,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &tool_registry,
             &provider,
             &handler,
@@ -365,6 +383,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,
@@ -389,6 +408,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,
@@ -415,6 +435,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,
@@ -439,6 +460,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,
@@ -489,6 +511,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &tool_registry,
             &provider,
             &handler,
@@ -511,6 +534,7 @@ mod tests {
             "hello",
             None,
             &HashMap::new(),
+            None,
             &HashMap::new(),
             &provider,
             &handler,

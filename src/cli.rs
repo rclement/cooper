@@ -3,10 +3,10 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
+use cooper_core::agent;
+use cooper_core::providers;
 
-use crate::agent;
 use crate::config;
-use crate::providers;
 use crate::tools;
 
 struct PrintHandler {
@@ -172,10 +172,15 @@ async fn prompt_cmd(
 
     let chunk_handler = PrintHandler::new();
 
+    let current_working_dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string());
+
     match agent::agent_loop_stream(
         &text,
         agent_instructions_content,
         &context_files_content,
+        current_working_dir,
         &tool_registry,
         provider.as_ref(),
         &chunk_handler,
