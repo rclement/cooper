@@ -469,6 +469,13 @@ body {
   font-weight: 500;
 }
 
+button.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
 button.danger {
   align-self: flex-start;
   background: transparent;
@@ -809,6 +816,23 @@ details:not([open]) > .block-body {
 
 .tool-line.is-error {
   color: #e08585;
+}
+
+/* Prompt: what the user asked at the start of each turn, so a multi-turn
+   conversation reads as an actual back-and-forth in the timeline. */
+.block-prompt {
+  background: none;
+  border-style: dashed;
+}
+
+.block-prompt .block-label,
+.block-prompt .block-icon {
+  color: var(--text-dim);
+}
+
+.block-prompt .block-body {
+  padding-top: 0.1em;
+  color: var(--text);
 }
 
 /* Usage: a small trailing pill, not a full block. */

@@ -88,6 +88,7 @@ pub struct ToolCall {
     pub arguments: HashMap<String, String>,
 }
 
+#[derive(Clone)]
 pub enum Message {
     System(String),
     User(String),
@@ -133,8 +134,18 @@ pub trait AgentEventsHandler {
     fn on_system_prompt(&self, _system_prompt: &str) {}
 }
 
+/// `messages` is the conversation history so far — empty for a brand-new
+/// session, non-empty when this is a follow-up turn. On a fresh session,
+/// this seeds the system prompt and reports it via `on_system_prompt` before
+/// sending anything; on a follow-up turn, the existing system prompt is
+/// reused as-is (customizing context mid-conversation isn't supported). In
+/// every case `user_prompt` is appended, the loop runs to completion, and
+/// every message produced along the way (including the final assistant
+/// reply) is appended to `messages` so the caller can pass the same `Vec`
+/// back in for the next turn.
 #[allow(clippy::too_many_arguments)]
 pub async fn agent_loop_stream(
+    messages: &mut Vec<Message>,
     user_prompt: &str,
     system_prompt_template: Option<String>,
     agent_instructions: Option<String>,
@@ -146,36 +157,43 @@ pub async fn agent_loop_stream(
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let tool_schemas: Vec<tools::ToolSchema> = tool_registry.values().map(|t| t.schema()).collect();
 
-    let system_prompt = build_system_prompt(
-        system_prompt_template.as_deref(),
-        agent_instructions.as_deref(),
-        context_files,
-        current_working_dir.as_deref(),
-    )?;
-    handler.on_system_prompt(&system_prompt);
-    let mut messages = vec![
-        Message::System(system_prompt),
-        Message::User(user_prompt.to_string()),
-    ];
+    if messages.is_empty() {
+        let system_prompt = build_system_prompt(
+            system_prompt_template.as_deref(),
+            agent_instructions.as_deref(),
+            context_files,
+            current_working_dir.as_deref(),
+        )?;
+        handler.on_system_prompt(&system_prompt);
+        messages.push(Message::System(system_prompt));
+    }
+    messages.push(Message::User(user_prompt.to_string()));
 
     loop {
         let (result, finish_reason) = provider
-            .complete_stream(&messages, &tool_schemas, handler)
+            .complete_stream(messages.as_slice(), &tool_schemas, handler)
             .await?;
 
         match finish_reason {
-            FinishReason::Stop => return Ok(result),
+            FinishReason::Stop => {
+                messages.push(result.clone());
+                return Ok(result);
+            }
             FinishReason::ToolCalls => {}
             FinishReason::Length => return Err("response truncated: token limit reached".into()),
             FinishReason::Unknown(s) => {
                 eprintln!("unknown finish reason: {}", s);
+                messages.push(result.clone());
                 return Ok(result);
             }
         }
 
         let tool_calls = match &result {
             Message::Assistant { tool_calls, .. } if !tool_calls.is_empty() => tool_calls.clone(),
-            _ => return Ok(result),
+            _ => {
+                messages.push(result.clone());
+                return Ok(result);
+            }
         };
 
         messages.push(result);
@@ -354,6 +372,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -373,6 +392,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_loop_stream_reuses_history_on_follow_up_turn() {
+        let provider = MockProvider::new(vec![
+            Box::new(|| Ok((assistant_text("first answer"), FinishReason::Stop))),
+            Box::new(|| Ok((assistant_text("second answer"), FinishReason::Stop))),
+        ]);
+        let handler = SpyHandler::default();
+        let mut messages = Vec::new();
+
+        agent_loop_stream(
+            &mut messages,
+            "first question",
+            None,
+            None,
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &provider,
+            &handler,
+        )
+        .await
+        .unwrap();
+
+        let result = agent_loop_stream(
+            &mut messages,
+            "second question",
+            None,
+            None,
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &provider,
+            &handler,
+        )
+        .await
+        .unwrap();
+
+        match result {
+            Message::Assistant { text, .. } => assert_eq!(text.as_deref(), Some("second answer")),
+            _ => panic!("expected assistant message"),
+        }
+        // System prompt is only built/reported once, on the first turn.
+        assert_eq!(handler.system_prompts.lock().unwrap().len(), 1);
+        // System + first user + first assistant + second user + second assistant.
+        assert_eq!(messages.len(), 5);
+        match &messages[1] {
+            Message::User(text) => assert_eq!(text, "first question"),
+            _ => panic!("expected first user message"),
+        }
+        match &messages[3] {
+            Message::User(text) => assert_eq!(text, "second question"),
+            _ => panic!("expected second user message"),
+        }
+    }
+
+    #[tokio::test]
     async fn agent_loop_stream_reports_system_prompt_before_first_completion() {
         let provider = MockProvider::new(vec![Box::new(|| {
             Ok((assistant_text("done"), FinishReason::Stop))
@@ -380,6 +454,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             Some("Be concise.".to_string()),
@@ -424,6 +499,7 @@ mod tests {
         tool_registry.insert("echo".to_string(), Box::new(EchoTool));
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -473,6 +549,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let _ = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -499,6 +576,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -527,6 +605,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -553,6 +632,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -605,6 +685,7 @@ mod tests {
         tool_registry.insert("echo".to_string(), Box::new(EchoTool));
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
@@ -629,6 +710,7 @@ mod tests {
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
+            &mut Vec::new(),
             "hello",
             None,
             None,
