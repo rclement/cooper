@@ -28,6 +28,7 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
 // preview; a new block starts whenever the event type changes, so each
 // turn's reasoning/response/tool-call naturally gets its own block.
 const BLOCK_KIND = {
+  prompt: { label: "You", icon: "›", collapsible: false },
   context: { label: "Context", icon: "▤", collapsible: true },
   reasoning: { label: "Reasoning", icon: "◌", collapsible: true },
   response: { label: "Response", icon: "◆", collapsible: false },
@@ -85,6 +86,12 @@ function openBlock(type) {
   $("timeline").appendChild(el);
 
   current = { type, body, preview, raw: "", icon };
+}
+
+function appendPrompt(text) {
+  openBlock("prompt");
+  current.body.textContent = text;
+  current.type = null; // one-shot; next event starts a fresh block
 }
 
 function appendSystemPrompt(text) {
@@ -180,7 +187,25 @@ worker.onmessage = (message) => {
   }
 };
 
+// A session spans multiple prompt/response turns sharing one conversation
+// history (kept on the wasm side). `sessionActive` tracks whether the next
+// Run click is a follow-up turn (append to the timeline) or the start of a
+// new session (clear it and tell the worker to build a fresh WasmAgent).
+let sessionActive = false;
+
+function startNewSession() {
+  sessionActive = false;
+  $("timeline").innerHTML = "";
+  current = { type: null, body: null, preview: null, raw: "", icon: null };
+  $("status").textContent = "";
+}
+
+$("new-session").addEventListener("click", startNewSession);
+
 $("run").addEventListener("click", () => {
+  const prompt = $("prompt").value.trim();
+  if (!prompt) return;
+
   const providerConfig = getCurrentConfig();
   if (!providerConfig) {
     $("status").textContent = "error: configure a provider and model first";
@@ -193,13 +218,18 @@ $("run").addEventListener("click", () => {
     agent_instructions: contextConfig.agentInstructions,
     context_files: contextConfig.contextFiles,
   };
-  const prompt = $("prompt").value;
   const enabledTools = getEnabledToolNames();
+  const newSession = !sessionActive;
 
-  $("timeline").innerHTML = "";
-  current = { type: null, body: null, preview: null, raw: "", icon: null };
+  if (newSession) {
+    $("timeline").innerHTML = "";
+    current = { type: null, body: null, preview: null, raw: "", icon: null };
+  }
+  appendPrompt(prompt);
   $("status").textContent = "running…";
   $("run").disabled = true;
+  $("prompt").value = "";
 
-  worker.postMessage({ prompt, config, enabledTools });
+  worker.postMessage({ prompt, config, enabledTools, newSession });
+  sessionActive = true;
 });

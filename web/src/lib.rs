@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use cooper_core::agent::{self, AgentEventsHandler, AgentMessageChunk, Message, ToolCall, Usage};
 use cooper_core::providers::openai_completions::OpenAICompletionsAPI;
@@ -89,10 +91,17 @@ fn js_error_to_string(value: &JsValue) -> String {
 /// Browser-side Cooper agent. Constructed with a JSON config object; tools
 /// are registered separately via `register_tool` since they carry a JS
 /// callback, which isn't representable in the JSON config.
+///
+/// Holds the conversation history across `run_prompt` calls (in an
+/// `Rc<RefCell<_>>` since `run_prompt` only borrows `&self`, but needs to
+/// mutate history from inside the async block it returns), so successive
+/// calls are follow-up turns in the same session rather than one-shot runs.
+/// Call `reset` to start a fresh session with the same config/tools.
 #[wasm_bindgen]
 pub struct WasmAgent {
     config: AgentConfig,
     tools: Vec<RegisteredTool>,
+    messages: Rc<RefCell<Vec<Message>>>,
 }
 
 #[wasm_bindgen]
@@ -107,7 +116,15 @@ impl WasmAgent {
         Ok(WasmAgent {
             config,
             tools: Vec::new(),
+            messages: Rc::new(RefCell::new(Vec::new())),
         })
+    }
+
+    /// Clears the conversation history, so the next `run_prompt` call starts
+    /// a brand-new session (fresh system prompt) instead of continuing the
+    /// previous one.
+    pub fn reset(&self) {
+        self.messages.borrow_mut().clear();
     }
 
     /// Registers a tool available for the agent to call. `schema_json` must
@@ -159,9 +176,15 @@ impl WasmAgent {
             })
             .collect();
         let handler = JsEventHandler { on_event };
+        let messages_state = Rc::clone(&self.messages);
 
         wasm_bindgen_futures::future_to_promise(async move {
+            // Taken out (rather than borrowed across the `.await`s below) and
+            // put back after, so a mid-turn error still leaves whatever
+            // history was produced so far in place for the next call.
+            let mut messages = messages_state.take();
             let result = agent::agent_loop_stream(
+                &mut messages,
                 &prompt,
                 system_prompt_template,
                 agent_instructions,
@@ -171,8 +194,10 @@ impl WasmAgent {
                 &provider,
                 &handler,
             )
-            .await
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            .await;
+            messages_state.replace(messages);
+
+            let result = result.map_err(|e| JsValue::from_str(&e.to_string()))?;
 
             serde_json::to_string(&MessageDto::from(&result))
                 .map(|s| JsValue::from_str(&s))

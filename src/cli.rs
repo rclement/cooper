@@ -69,7 +69,7 @@ struct Args {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Send a prompt to the agent
+    /// Send a single one-shot prompt to the agent
     Prompt {
         /// Text to send
         text: String,
@@ -86,15 +86,41 @@ enum Command {
         #[arg(long, short = 'c', num_args = 0..)]
         context_file: Vec<String>,
     },
+    /// Start an interactive multi-turn conversation with the agent
+    Chat {
+        /// Provider name
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+        /// Model name
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+        /// Agent instructions filepath
+        #[arg(long, short = 'i')]
+        agent_instructions: Option<String>,
+        /// Additional context files
+        #[arg(long, short = 'c', num_args = 0..)]
+        context_file: Vec<String>,
+    },
 }
 
-async fn prompt_cmd(
-    text: String,
+/// Everything shared by `prompt` and `chat` to build one agent turn: the
+/// resolved provider, the loaded agent-instructions/context-file content
+/// (built once, reused on every turn of a `chat` session), the built-in
+/// tool registry, and the current working directory.
+struct AgentSetup {
+    provider: Box<dyn providers::Provider>,
+    agent_instructions_content: Option<String>,
+    context_files_content: HashMap<String, String>,
+    tool_registry: HashMap<String, Box<dyn tools::Tool>>,
+    current_working_dir: Option<String>,
+}
+
+fn setup_agent(
     provider_name: Option<String>,
     model_name: Option<String>,
     agent_instructions: Option<String>,
     context_files: Vec<String>,
-) {
+) -> AgentSetup {
     let config = match config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -170,28 +196,91 @@ async fn prompt_cmd(
         tool_registry.insert(tool.schema().name.clone(), tool);
     }
 
-    let chunk_handler = PrintHandler::new();
-
     let current_working_dir = std::env::current_dir()
         .ok()
         .map(|p| p.display().to_string());
 
-    match agent::agent_loop_stream(
+    AgentSetup {
+        provider,
+        agent_instructions_content,
+        context_files_content,
+        tool_registry,
+        current_working_dir,
+    }
+}
+
+async fn prompt_cmd(
+    text: String,
+    provider_name: Option<String>,
+    model_name: Option<String>,
+    agent_instructions: Option<String>,
+    context_files: Vec<String>,
+) {
+    let setup = setup_agent(provider_name, model_name, agent_instructions, context_files);
+    let chunk_handler = PrintHandler::new();
+    let mut messages: Vec<agent::Message> = Vec::new();
+
+    if let Err(e) = agent::agent_loop_stream(
+        &mut messages,
         &text,
         None,
-        agent_instructions_content,
-        &context_files_content,
-        current_working_dir,
-        &tool_registry,
-        provider.as_ref(),
+        setup.agent_instructions_content,
+        &setup.context_files_content,
+        setup.current_working_dir,
+        &setup.tool_registry,
+        setup.provider.as_ref(),
         &chunk_handler,
     )
     .await
     {
-        Ok(_) => {}
-        Err(e) => {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn chat_cmd(
+    provider_name: Option<String>,
+    model_name: Option<String>,
+    agent_instructions: Option<String>,
+    context_files: Vec<String>,
+) {
+    let setup = setup_agent(provider_name, model_name, agent_instructions, context_files);
+    let chunk_handler = PrintHandler::new();
+    let mut messages: Vec<agent::Message> = Vec::new();
+
+    println!("Chat session started. Type 'exit', 'quit', or an empty line to end it.");
+
+    loop {
+        print!("\n> ");
+        let _ = std::io::stdout().flush();
+
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) => break, // EOF (e.g. Ctrl-D)
+            Err(_) => break,
+            Ok(_) => {}
+        }
+
+        let line = line.trim();
+        if line.is_empty() || line == "exit" || line == "quit" {
+            break;
+        }
+
+        if let Err(e) = agent::agent_loop_stream(
+            &mut messages,
+            line,
+            None,
+            setup.agent_instructions_content.clone(),
+            &setup.context_files_content,
+            setup.current_working_dir.clone(),
+            &setup.tool_registry,
+            setup.provider.as_ref(),
+            &chunk_handler,
+        )
+        .await
+        {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            break;
         }
     }
 }
@@ -207,6 +296,12 @@ pub async fn run() {
             agent_instructions,
             context_file,
         } => prompt_cmd(text, provider, model, agent_instructions, context_file).await,
+        Command::Chat {
+            provider,
+            model,
+            agent_instructions,
+            context_file,
+        } => chat_cmd(provider, model, agent_instructions, context_file).await,
     }
 }
 
