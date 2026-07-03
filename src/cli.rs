@@ -203,3 +203,74 @@ pub async fn run() {
         } => prompt_cmd(text, provider, model, agent_instructions, context_file).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent::AgentEventsHandler;
+
+    #[test]
+    fn print_handler_starts_in_response_mode() {
+        let handler = PrintHandler::new();
+
+        assert!(!handler.reasoning.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn print_handler_switches_to_reasoning_mode_on_reasoning_chunk() {
+        let handler = PrintHandler::new();
+
+        handler.on_chunk(&agent::AgentMessageChunk {
+            text: None,
+            reasoning: Some("thinking".to_string()),
+        });
+
+        assert!(handler.reasoning.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn print_handler_switches_back_to_response_mode_on_text_chunk() {
+        let handler = PrintHandler::new();
+        handler.on_chunk(&agent::AgentMessageChunk {
+            text: None,
+            reasoning: Some("thinking".to_string()),
+        });
+
+        handler.on_chunk(&agent::AgentMessageChunk {
+            text: Some("answer".to_string()),
+            reasoning: None,
+        });
+
+        assert!(!handler.reasoning.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn print_handler_ignores_empty_chunk() {
+        let handler = PrintHandler::new();
+
+        handler.on_chunk(&agent::AgentMessageChunk {
+            text: None,
+            reasoning: None,
+        });
+
+        assert!(!handler.reasoning.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn print_handler_callbacks_do_not_panic() {
+        let handler = PrintHandler::new();
+
+        handler.on_complete(&agent::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+        });
+        handler.on_tool_call(&agent::ToolCall {
+            id: "1".to_string(),
+            name: "echo".to_string(),
+            arguments: HashMap::new(),
+        });
+        handler.on_tool_result(&Ok("output".to_string()));
+        handler.on_tool_result(&Err("failure".to_string()));
+    }
+}
