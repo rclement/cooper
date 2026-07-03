@@ -9,8 +9,6 @@ use crate::agent::{AgentEventsHandler, AgentMessageChunk, FinishReason, Message,
 use crate::providers::Provider;
 use crate::tools::{ToolParameterTypeSchema, ToolSchema};
 
-/// === utility functions === ///
-
 fn get_tool_param_type(param_type: &ToolParameterTypeSchema) -> &'static str {
     match param_type {
         ToolParameterTypeSchema::String => "string",
@@ -18,8 +16,6 @@ fn get_tool_param_type(param_type: &ToolParameterTypeSchema) -> &'static str {
         ToolParameterTypeSchema::Boolean => "boolean",
     }
 }
-
-/// === api payload schemas === ///
 
 #[derive(Serialize)]
 struct ApiStreamOptions {
