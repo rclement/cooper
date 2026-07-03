@@ -17,21 +17,32 @@ body {
     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--bg);
   color: var(--text);
-  max-width: 46rem;
-  margin: 0 auto;
-  padding: 3rem 1.25rem 4rem;
+  margin: 0;
   line-height: 1.5;
 }
 
-header {
-  margin-bottom: 2.5rem;
+.app {
+  display: flex;
+  min-height: 100vh;
 }
 
-h1 {
-  font-size: 1.4rem;
+.sidebar {
+  width: 14rem;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1.5rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.brand {
+  font-size: 1.05rem;
   font-weight: 600;
-  margin: 0 0 0.5rem;
   letter-spacing: -0.01em;
+  padding: 0 0.5rem;
+  margin-bottom: 1.5rem;
 }
 
 .badge {
@@ -48,20 +59,233 @@ h1 {
 .hint {
   color: var(--text-dim);
   font-size: 0.85em;
-  margin: 0;
+  margin: 0 0 1.5rem;
   max-width: 38rem;
 }
 
-main {
+.nav-item {
   display: flex;
-  flex-direction: column;
-  gap: 2rem;
+  align-items: center;
+  gap: 0.7em;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 0.5em;
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 0.55em 0.7em;
+  cursor: pointer;
+  text-align: left;
 }
 
-section.config {
+.nav-item svg {
+  width: 1.1em;
+  height: 1.1em;
+  flex-shrink: 0;
+}
+
+.nav-item:hover {
+  color: var(--text);
+  background: var(--bg);
+  opacity: 1;
+}
+
+.nav-item.is-active {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.nav-item.is-active svg {
+  color: var(--accent);
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  padding: 2.5rem 2.5rem 4rem;
+}
+
+.view {
+  display: none;
+  flex-direction: column;
+  gap: 2rem;
+  max-width: 46rem;
+}
+
+.view.is-active {
+  display: flex;
+}
+
+.config {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.provider {
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  padding: 0.75em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.provider-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.provider-name {
+  flex: 1;
+  font-weight: 600;
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0;
+}
+
+.provider-name:hover,
+.provider-name:focus {
+  border-color: var(--border);
+  padding-left: 0.7em;
+}
+
+.provider-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.models {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.model-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 1em;
+  padding: 0.25em 0.4em 0.25em 0.7em;
+  font-family: var(--mono);
+  font-size: 0.8em;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.9em;
+  line-height: 1;
+  padding: 0.2em 0.35em;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  opacity: 1;
+}
+
+.model-tag-select {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 1em;
+  padding: 0;
+  cursor: pointer;
+}
+
+.model-tag-select:hover {
+  color: var(--text);
+}
+
+.model-tag.is-default {
+  border-color: var(--accent);
+}
+
+.model-tag.is-default .model-tag-select {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.add-model-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-model-row input {
+  flex: 1;
+}
+
+.add-model-row button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  padding: 0.5em 0.9em;
+}
+
+.add-provider-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 0.6rem;
+  align-items: end;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.add-provider-form button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
+button.danger {
+  align-self: flex-start;
+  background: transparent;
+  color: #e08585;
+  border: 1px solid #4a2a2a;
+  font-weight: 500;
+}
+
+button.danger:hover {
+  background: #201414;
+  opacity: 1;
+}
+
+select {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.55em 0.7em;
+  outline: none;
+}
+
+select:disabled {
+  color: var(--text-dim);
 }
 
 .field {
@@ -140,19 +364,6 @@ button:disabled {
   color: var(--text-dim);
 }
 
-.output-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.25rem;
-}
-
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
 h2 {
   font-size: 0.75rem;
   font-weight: 600;
@@ -162,12 +373,75 @@ h2 {
   margin: 0;
 }
 
-.panel {
-  background: var(--surface);
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.block {
   border: 1px solid var(--border);
-  border-radius: 0.5em;
-  padding: 0.75em;
-  min-height: 2.5em;
+  border-radius: 0.6em;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.block-header {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.6em 0.85em;
+  font-size: 0.8rem;
+  cursor: default;
+  list-style: none;
+}
+
+summary.block-header {
+  cursor: pointer;
+}
+
+summary.block-header::-webkit-details-marker {
+  display: none;
+}
+
+summary.block-header::before {
+  content: "›";
+  display: inline-block;
+  color: var(--text-dim);
+  transition: transform 0.15s ease;
+  width: 0.8em;
+}
+
+details[open] > summary.block-header::before {
+  transform: rotate(90deg);
+}
+
+.block-icon {
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+.block-label {
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75em;
+  flex-shrink: 0;
+}
+
+.block-preview {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.block-body {
+  padding: 0 0.85em 0.75em;
   font-family: var(--mono);
   font-size: 0.85em;
   white-space: pre-wrap;
@@ -175,26 +449,98 @@ h2 {
   color: var(--text);
 }
 
-.tool-call,
-.tool-result {
-  font-family: var(--mono);
-  font-size: 0.85em;
-  margin: 0.3em 0;
+details:not([open]) > .block-body {
+  display: none;
 }
 
-.tool-call {
+/* Reasoning: muted, collapsed by default (no [open] attribute in markup). */
+.block-reasoning {
+  border-style: dashed;
+}
+
+.block-reasoning .block-body {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Response: the primary output — always expanded, visually foregrounded. */
+.block-response {
+  border-color: var(--accent);
+  border-left-width: 3px;
+}
+
+.block-response .block-label {
   color: var(--accent);
 }
 
-.tool-result {
+.block-response .block-body {
+  padding-top: 0.1em;
+}
+
+/* Tool activity: collapsed by default, distinct accent color. */
+.block-tool .block-label,
+.block-tool .block-icon {
+  color: #d4a24c;
+}
+
+.tool-line {
+  margin: 0.2em 0;
+}
+
+.tool-line.tool-call {
+  color: #d4a24c;
+}
+
+.tool-line.tool-result {
+  color: var(--text-dim);
+}
+
+.tool-line.is-error {
+  color: #e08585;
+}
+
+/* Usage: a small trailing pill, not a full block. */
+.block-usage {
+  align-self: flex-start;
+  border-radius: 1em;
+  padding: 0.3em 0.85em;
+  font-size: 0.75rem;
   color: var(--text-dim);
 }
 
 @media (max-width: 40rem) {
-  section.config {
-    grid-template-columns: 1fr;
-  }
+  .config,
+  .provider-fields,
   .output-grid {
     grid-template-columns: 1fr;
+  }
+  .add-provider-form {
+    grid-template-columns: 1fr;
+  }
+
+  .app {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0.75rem 1rem;
+  }
+
+  .brand {
+    margin-bottom: 0;
+    margin-right: 0.5rem;
+  }
+
+  .nav-item span {
+    display: none;
+  }
+
+  .content {
+    padding: 1.5rem 1.25rem 3rem;
   }
 }

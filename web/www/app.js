@@ -1,35 +1,131 @@
 // Main-thread UI glue: wires the form to the agent Worker and renders the
 // events it streams back. No framework, no build step.
+import { initSettings, getCurrentConfig } from "./settings.js";
+
 const worker = new Worker("worker.js", { type: "module" });
 
 const $ = (id) => document.getElementById(id);
 
+initSettings();
+
+for (const navItem of document.querySelectorAll(".nav-item")) {
+  navItem.addEventListener("click", () => {
+    for (const item of document.querySelectorAll(".nav-item")) {
+      item.classList.toggle("is-active", item === navItem);
+    }
+    for (const view of document.querySelectorAll(".view")) {
+      view.classList.toggle("is-active", view.id === `view-${navItem.dataset.view}`);
+    }
+  });
+}
+
+// Renders the agent's stream as a vertical sequence of typed blocks
+// (reasoning / response / tool call / usage), each visually distinct.
+// Reasoning and tool blocks are collapsed by default with a one-line
+// preview; a new block starts whenever the event type changes, so each
+// turn's reasoning/response/tool-call naturally gets its own block.
+const BLOCK_KIND = {
+  reasoning: { label: "Reasoning", icon: "◌", collapsible: true },
+  response: { label: "Response", icon: "◆", collapsible: false },
+  tool: { label: "Tool", icon: "⚙", collapsible: true },
+};
+
+let current = { type: null, body: null, preview: null };
+
+function truncate(text, max = 90) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+function openBlock(type) {
+  const kind = BLOCK_KIND[type];
+  const el = document.createElement(kind.collapsible ? "details" : "div");
+  el.className = `block block-${type}`;
+
+  const header = document.createElement(kind.collapsible ? "summary" : "div");
+  header.className = "block-header";
+
+  const icon = document.createElement("span");
+  icon.className = "block-icon";
+  icon.textContent = kind.icon;
+
+  const label = document.createElement("span");
+  label.className = "block-label";
+  label.textContent = kind.label;
+
+  header.append(icon, label);
+
+  let preview = null;
+  if (kind.collapsible) {
+    preview = document.createElement("span");
+    preview.className = "block-preview";
+    header.appendChild(preview);
+  }
+
+  const body = document.createElement("div");
+  body.className = "block-body";
+
+  el.append(header, body);
+  $("timeline").appendChild(el);
+
+  current = { type, body, preview };
+}
+
+function appendReasoning(text) {
+  if (current.type !== "reasoning") openBlock("reasoning");
+  current.body.textContent += text;
+  current.preview.textContent = truncate(current.body.textContent);
+}
+
+function appendResponse(text) {
+  if (current.type !== "response") openBlock("response");
+  current.body.textContent += text;
+}
+
 function appendToolCall(event) {
-  const div = document.createElement("div");
-  div.className = "tool-call";
-  div.textContent = `▶ ${event.name} ${JSON.stringify(event.arguments)}`;
-  $("tool-log").appendChild(div);
+  openBlock("tool");
+  const argsPreview = JSON.stringify(event.arguments);
+
+  const line = document.createElement("div");
+  line.className = "tool-line tool-call";
+  line.textContent = `▶ ${event.name} ${argsPreview}`;
+  current.body.appendChild(line);
+
+  current.preview.textContent = truncate(`${event.name} ${argsPreview}`, 60);
 }
 
 function appendToolResult(event) {
-  const div = document.createElement("div");
-  div.className = "tool-result";
+  if (current.type !== "tool") openBlock("tool");
   const { Ok, Err } = event.result;
-  div.textContent = Ok !== undefined ? `◀ ${Ok}` : `◀ error: ${Err}`;
-  $("tool-log").appendChild(div);
+  const isError = Err !== undefined;
+
+  const line = document.createElement("div");
+  line.className = "tool-line tool-result" + (isError ? " is-error" : "");
+  line.textContent = isError ? `◀ error: ${Err}` : `◀ ${Ok}`;
+  current.body.appendChild(line);
+
+  current.preview.textContent = `${isError ? "✗" : "✓"} ${current.preview.textContent}`;
+  current.type = null; // next event starts a fresh block, even if also a tool call
+}
+
+function appendUsage(event) {
+  const el = document.createElement("div");
+  el.className = "block block-usage";
+  el.textContent =
+    `${event.total_tokens} tokens` +
+    ` · ${event.prompt_tokens} prompt · ${event.completion_tokens} completion`;
+  $("timeline").appendChild(el);
+  current = { type: null, body: null, preview: null };
 }
 
 function handleEvent(event) {
   switch (event.type) {
     case "chunk":
-      if (event.text) $("output").textContent += event.text;
-      if (event.reasoning) $("reasoning").textContent += event.reasoning;
+      if (event.reasoning) appendReasoning(event.reasoning);
+      if (event.text) appendResponse(event.text);
       break;
     case "usage":
-      $("usage").textContent =
-        `prompt: ${event.prompt_tokens}, ` +
-        `completion: ${event.completion_tokens}, ` +
-        `total: ${event.total_tokens}`;
+      appendUsage(event);
       break;
     case "tool_call":
       appendToolCall(event);
@@ -54,17 +150,15 @@ worker.onmessage = (message) => {
 };
 
 $("run").addEventListener("click", () => {
-  const config = {
-    base_url: $("base-url").value,
-    api_key: $("api-key").value,
-    model: $("model").value,
-  };
+  const config = getCurrentConfig();
+  if (!config) {
+    $("status").textContent = "error: configure a provider and model first";
+    return;
+  }
   const prompt = $("prompt").value;
 
-  $("output").textContent = "";
-  $("reasoning").textContent = "";
-  $("tool-log").textContent = "";
-  $("usage").textContent = "";
+  $("timeline").innerHTML = "";
+  current = { type: null, body: null, preview: null };
   $("status").textContent = "running…";
   $("run").disabled = true;
 
