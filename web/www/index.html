@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cooper — web</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <h1>Cooper <span class="badge">web</span></h1>
+    <p class="hint">
+      Runs entirely client-side, in a Web Worker running a wasm build of the
+      same agent core as the CLI. No server-side proxy — your API key and
+      prompts never leave the browser.
+    </p>
+
+    <fieldset>
+      <legend>Provider config</legend>
+      <label>Base URL <input id="base-url" value="http://localhost:11434/v1" /></label>
+      <label>API key <input id="api-key" type="password" value="ollama" /></label>
+      <label>Model <input id="model" value="qwen3.5:0.8b" /></label>
+    </fieldset>
+
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" rows="3">reply with exactly the word: PONG</textarea>
+
+    <div class="row">
+      <button id="run">Run</button>
+      <span id="status"></span>
+    </div>
+
+    <h2>Reasoning</h2>
+    <pre id="reasoning" class="panel"></pre>
+
+    <h2>Response</h2>
+    <pre id="output" class="panel"></pre>
+
+    <h2>Tool activity</h2>
+    <div id="tool-log" class="panel"></div>
+
+    <h2>Usage</h2>
+    <div id="usage" class="panel"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

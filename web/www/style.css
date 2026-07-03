@@ -1,0 +1,71 @@
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 44rem;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  color: #1a1a1a;
+}
+
+.badge {
+  font-size: 0.6em;
+  vertical-align: middle;
+  background: #eee;
+  border-radius: 0.3em;
+  padding: 0.15em 0.5em;
+}
+
+.hint {
+  color: #555;
+  font-size: 0.9em;
+}
+
+fieldset {
+  border: 1px solid #ddd;
+  border-radius: 0.4em;
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  margin: 0.4rem 0;
+}
+
+input,
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  padding: 0.3em;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.6rem 0 1.2rem;
+}
+
+button {
+  padding: 0.4em 1em;
+}
+
+.panel {
+  background: #f7f7f7;
+  border: 1px solid #eee;
+  border-radius: 0.4em;
+  padding: 0.6em;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-call,
+.tool-result {
+  font-family: monospace;
+  font-size: 0.85em;
+  margin: 0.3em 0;
+}
+
+.tool-result {
+  color: #555;
+}
