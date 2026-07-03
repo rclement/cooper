@@ -312,8 +312,17 @@ async fn process_stream(
             if let Some(json) = line.strip_prefix("data: ") {
                 let delta = serde_json::from_str::<ApiStreamChunk>(json)?;
                 if let Some(choice) = delta.choices.first() {
+                    // Some providers emit a whitespace-only content delta (e.g. a
+                    // lone "\n") right before or after a tool call, as a
+                    // formatting artifact rather than real response text.
+                    // Drop it while no real text has been seen yet, so
+                    // `Message::Assistant.text` stays `None` for tool-only
+                    // turns; once real content is underway, keep whitespace
+                    // deltas as-is so intra-response formatting (blank lines
+                    // between paragraphs, etc.) isn't lost.
                     if let Some(content) = &choice.delta.content
                         && !content.is_empty()
+                        && (!result.text_buf.is_empty() || !content.trim().is_empty())
                     {
                         result.text_buf.push_str(content);
                         handler.on_chunk(&AgentMessageChunk {
@@ -685,6 +694,54 @@ mod tests {
             vec!["Hello".to_string()]
         );
         assert_eq!(*handler.usages.lock().unwrap(), vec![(10, 5, 15)]);
+    }
+
+    #[tokio::test]
+    async fn complete_stream_drops_leading_whitespace_only_content_before_tool_call() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":"\n","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call-1","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, _) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match message {
+            Message::Assistant { text, .. } => assert_eq!(text, None),
+            _ => panic!("expected assistant message"),
+        }
+        assert!(handler.text_chunks.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn complete_stream_preserves_whitespace_once_real_text_has_started() {
+        let body = sse_body(&[
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":"First.","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":"\n\n","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}],"usage":null}"#,
+            r#"{"id":"1","choices":[{"index":0,"delta":{"role":null,"content":"Second.","reasoning":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"stop"}],"usage":null}"#,
+        ]);
+        let server = mock_server_with_body(body).await;
+        let api = OpenAICompletionsAPI::new(server.uri(), "test-key", "test-model");
+        let handler = SpyHandler::default();
+
+        let (message, _) = api.complete_stream(&[], &[], &handler).await.unwrap();
+
+        match message {
+            Message::Assistant { text, .. } => {
+                assert_eq!(text.as_deref(), Some("First.\n\nSecond."))
+            }
+            _ => panic!("expected assistant message"),
+        }
+        assert_eq!(
+            *handler.text_chunks.lock().unwrap(),
+            vec![
+                "First.".to_string(),
+                "\n\n".to_string(),
+                "Second.".to_string()
+            ]
+        );
     }
 
     #[tokio::test]
