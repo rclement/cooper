@@ -57,19 +57,16 @@
 
             <aside class="context-panel">
               <div class="context-section">
-                <h3>System prompt template</h3>
+                <h3>Context files</h3>
                 <p class="hint">
-                  Overrides the whole template (Jinja-style). Leave empty to
-                  use the default. Available: <code>agent_instructions</code>,
-                  <code>context_files</code> (each with <code>path</code>/
-                  <code>content</code>), <code>current_date</code>,
-                  <code>current_time</code>, <code>current_working_dir</code>.
+                  Fetched by URL when added (subject to CORS) and forwarded
+                  to the agent as extra context.
                 </p>
-                <textarea
-                  id="system-prompt-template"
-                  rows="8"
-                  placeholder="(default template)"
-                ></textarea>
+                <div id="context-file-list" class="context-file-list"></div>
+                <form id="add-context-file-form" class="add-context-file-form">
+                  <input id="new-context-file-url" placeholder="https://…" />
+                  <button type="submit">Add</button>
+                </form>
               </div>
 
               <div class="context-section">
@@ -86,16 +83,19 @@
               </div>
 
               <div class="context-section">
-                <h3>Context files</h3>
+                <h3>System prompt template</h3>
                 <p class="hint">
-                  Fetched by URL when added (subject to CORS) and forwarded
-                  to the agent as extra context.
+                  Overrides the whole template (Jinja-style). Leave empty to
+                  use the default. Available: <code>agent_instructions</code>,
+                  <code>context_files</code> (each with <code>path</code>/
+                  <code>content</code>), <code>current_date</code>,
+                  <code>current_time</code>, <code>current_working_dir</code>.
                 </p>
-                <div id="context-file-list" class="context-file-list"></div>
-                <form id="add-context-file-form" class="add-context-file-form">
-                  <input id="new-context-file-url" placeholder="https://…" />
-                  <button type="submit">Add</button>
-                </form>
+                <textarea
+                  id="system-prompt-template"
+                  rows="8"
+                  placeholder="(default template)"
+                ></textarea>
               </div>
             </aside>
           </div>
