@@ -7,6 +7,7 @@ use cooper_core::agent;
 use cooper_core::providers;
 
 use crate::config;
+use crate::sessions::{self, SessionRecord};
 use crate::tools;
 
 struct PrintHandler {
@@ -100,6 +101,25 @@ enum Command {
         /// Additional context files
         #[arg(long, short = 'c', num_args = 0..)]
         context_file: Vec<String>,
+        /// Resume a previously saved chat session by id (see `sessions list`)
+        #[arg(long, short = 'r')]
+        resume: Option<String>,
+    },
+    /// Manage saved chat sessions
+    Sessions {
+        #[command(subcommand)]
+        action: SessionsCommand,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum SessionsCommand {
+    /// List saved chat sessions
+    List,
+    /// Print a saved session's full transcript
+    Show {
+        /// Session id
+        id: String,
     },
 }
 
@@ -109,6 +129,8 @@ enum Command {
 /// tool registry, and the current working directory.
 struct AgentSetup {
     provider: Box<dyn providers::Provider>,
+    provider_name: String,
+    model_name: String,
     agent_instructions_content: Option<String>,
     context_files_content: HashMap<String, String>,
     tool_registry: HashMap<String, Box<dyn tools::Tool>>,
@@ -202,6 +224,8 @@ fn setup_agent(
 
     AgentSetup {
         provider,
+        provider_name,
+        model_name,
         agent_instructions_content,
         context_files_content,
         tool_registry,
@@ -238,17 +262,70 @@ async fn prompt_cmd(
     }
 }
 
+/// Prints a saved session's messages in the same `[reasoning]`/`[response]`/
+/// `[tool call]`/`[tool result]` style `PrintHandler` uses live, so a
+/// resumed or `sessions show`n session reads the same way a live run did.
+fn print_transcript(messages: &[agent::Message]) {
+    for message in messages {
+        match message {
+            agent::Message::System(text) => println!("[system]\n{text}\n"),
+            agent::Message::User(text) => println!("[you] {text}\n"),
+            agent::Message::Assistant {
+                text,
+                reasoning,
+                tool_calls,
+            } => {
+                if let Some(r) = reasoning {
+                    println!("[reasoning] {r}\n");
+                }
+                if let Some(t) = text {
+                    println!("[response] {t}\n");
+                }
+                for tc in tool_calls {
+                    println!("[tool call] {} {:?}\n", tc.name, tc.arguments);
+                }
+            }
+            agent::Message::Tool { result, .. } => match result {
+                Ok(output) => println!("[tool result]\n{output}\n"),
+                Err(e) => println!("[tool error]\n{e}\n"),
+            },
+        }
+    }
+}
+
 async fn chat_cmd(
     provider_name: Option<String>,
     model_name: Option<String>,
     agent_instructions: Option<String>,
     context_files: Vec<String>,
+    resume: Option<String>,
 ) {
     let setup = setup_agent(provider_name, model_name, agent_instructions, context_files);
     let chunk_handler = PrintHandler::new();
-    let mut messages: Vec<agent::Message> = Vec::new();
 
-    println!("Chat session started. Type 'exit', 'quit', or an empty line to end it.");
+    let mut session = match resume {
+        Some(id) => match sessions::load(&id) {
+            Ok(session) => {
+                println!(
+                    "Resuming session \"{}\" ({} messages so far)\n",
+                    session.title,
+                    session.history.len()
+                );
+                print_transcript(&session.history);
+                session
+            }
+            Err(e) => {
+                eprintln!("error loading session '{id}': {e}");
+                std::process::exit(1);
+            }
+        },
+        None => SessionRecord::new(setup.provider_name.clone(), setup.model_name.clone()),
+    };
+
+    println!(
+        "Chat session started (id: {}). Type 'exit', 'quit', or an empty line to end it.",
+        session.id
+    );
 
     loop {
         print!("\n> ");
@@ -266,8 +343,12 @@ async fn chat_cmd(
             break;
         }
 
+        if session.history.is_empty() && session.title.is_empty() {
+            session.title = line.chars().take(80).collect();
+        }
+
         if let Err(e) = agent::agent_loop_stream(
-            &mut messages,
+            &mut session.history,
             line,
             None,
             setup.agent_instructions_content.clone(),
@@ -282,7 +363,78 @@ async fn chat_cmd(
             eprintln!("error: {e}");
             break;
         }
+
+        session.touch();
+        if let Err(e) = sessions::save(&session) {
+            eprintln!("warning: failed to save session: {e}");
+        }
     }
+}
+
+fn format_relative(now_ms: u64, ts_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(ts_ms) / 1000;
+    if seconds < 60 {
+        return "just now".to_string();
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    format!("{}d ago", hours / 24)
+}
+
+fn sessions_list_cmd() {
+    let saved = match sessions::list() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error listing sessions: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if saved.is_empty() {
+        println!("No saved sessions yet. Start one with `agent-cooper chat`.");
+        return;
+    }
+
+    let now = sessions::now_unix();
+    for session in &saved {
+        let title = if session.title.is_empty() {
+            "(untitled)"
+        } else {
+            &session.title
+        };
+        println!(
+            "{}  {title:<40}  {} · {} · {} messages",
+            session.id,
+            format_relative(now, session.updated_at),
+            session.model,
+            session.history.len(),
+        );
+    }
+}
+
+fn sessions_show_cmd(id: String) {
+    let session = match sessions::load(&id) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error loading session '{id}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let title = if session.title.is_empty() {
+        "(untitled)"
+    } else {
+        &session.title
+    };
+    println!("Session: {title}");
+    println!("Provider: {}  Model: {}\n", session.provider, session.model);
+    print_transcript(&session.history);
 }
 
 pub async fn run() {
@@ -301,7 +453,12 @@ pub async fn run() {
             model,
             agent_instructions,
             context_file,
-        } => chat_cmd(provider, model, agent_instructions, context_file).await,
+            resume,
+        } => chat_cmd(provider, model, agent_instructions, context_file, resume).await,
+        Command::Sessions { action } => match action {
+            SessionsCommand::List => sessions_list_cmd(),
+            SessionsCommand::Show { id } => sessions_show_cmd(id),
+        },
     }
 }
 

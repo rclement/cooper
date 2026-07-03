@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::providers::Provider;
 use crate::tools;
@@ -81,14 +81,17 @@ fn build_system_prompt(
     env.get_template("system_prompt")?.render(context)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: HashMap<String, String>,
 }
 
-#[derive(Clone)]
+/// Serializable so a caller (e.g. the web UI) can snapshot conversation
+/// history to persist a session and later restore it to resume the
+/// conversation, without needing to keep the whole `WasmAgent`/process alive.
+#[derive(Clone, Serialize, Deserialize)]
 pub enum Message {
     System(String),
     User(String),

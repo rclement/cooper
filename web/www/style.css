@@ -117,7 +117,7 @@ body {
 }
 
 #view-sessions {
-  max-width: 74rem;
+  max-width: 88rem;
 }
 
 .session-layout {
@@ -132,6 +132,89 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2rem;
+}
+
+.sessions-panel {
+  width: 15rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  position: sticky;
+  top: 2.5rem;
+}
+
+.sessions-panel h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.session-list .hint {
+  margin: 0;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  background: var(--surface);
+  padding: 0.5em 0.7em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-item:hover {
+  border-color: var(--text-dim);
+}
+
+.session-item.is-active {
+  border-color: var(--accent);
+}
+
+.session-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.session-item-title {
+  font-size: 0.85rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item-meta {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.session-item-delete {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  padding: 0.2em 0.4em;
+  cursor: pointer;
+}
+
+.session-item-delete:hover {
+  color: #e08585;
 }
 
 .context-panel {
@@ -849,7 +932,8 @@ details:not([open]) > .block-body {
     flex-direction: column;
   }
 
-  .context-panel {
+  .context-panel,
+  .sessions-panel {
     width: 100%;
     position: static;
   }

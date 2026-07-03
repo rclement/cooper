@@ -204,6 +204,65 @@ pub async fn open_app(
     Ok(page)
 }
 
+/// Reloads the app on the same page, without touching localStorage (so
+/// provider settings survive) or IndexedDB (so saved sessions survive) —
+/// simulating a real page refresh, to exercise session persistence.
+pub async fn reload_app(
+    page: &Page,
+    static_base_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let index_url = format!("{static_base_url}/www/index.html");
+    page.goto(index_url).await?;
+    Ok(())
+}
+
+/// Waits for the sessions list to contain at least one saved session, then
+/// clicks the most recent one to load it.
+pub async fn open_first_saved_session(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5);
+    loop {
+        let count: f64 = page
+            .evaluate("document.querySelectorAll('.session-item').length")
+            .await?
+            .into_value()?;
+        if count >= 1.0 {
+            break;
+        }
+        if start.elapsed() > timeout {
+            return Err("timed out waiting for a saved session to appear in the list".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    page.evaluate("document.querySelector('.session-item').click()")
+        .await?;
+    Ok(())
+}
+
+/// Reads every saved session's persisted message-history length directly
+/// from IndexedDB (bypassing the UI entirely) — used to assert that a
+/// session's stored `history` is the core agent's `Vec<Message>` (one entry
+/// per system/user/assistant/tool message), not one entry per streamed SSE
+/// chunk, regardless of how many chunks the model streamed a reply in.
+pub async fn get_saved_session_history_lengths(
+    page: &Page,
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    let js = "() => new Promise((resolve, reject) => {
+        const req = indexedDB.open('cooper-sessions');
+        req.onsuccess = () => {
+            const db = req.result;
+            const tx = db.transaction('sessions', 'readonly');
+            const getAllReq = tx.objectStore('sessions').getAll();
+            getAllReq.onsuccess = () => resolve(
+                getAllReq.result.map((s) => (s.history ? JSON.parse(s.history).length : 0)),
+            );
+            getAllReq.onerror = () => reject(getAllReq.error);
+        };
+        req.onerror = () => reject(req.error);
+    })";
+    Ok(page.evaluate(js).await?.into_value()?)
+}
+
 /// Sets the prompt textarea, clicks Run, and waits for the run to finish
 /// (status becomes "done"), returning an error if it errors out or times out.
 pub async fn run_prompt(page: &Page, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
