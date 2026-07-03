@@ -18,3 +18,4 @@ tokio = { version = "1.52.3", features = ["full"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+wiremock = "0.6.5"
