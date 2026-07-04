@@ -1,6 +1,9 @@
 // Provider/model settings: persisted to localStorage, with a small CRUD
 // panel rendered directly into the DOM (no framework, no build step).
+import { LOCAL_PROVIDER_ID, LOCAL_MODEL_CATALOG } from "./local-models.js";
+
 const STORAGE_KEY = "cooper.settings.v1";
+const LOCAL_PROVIDER_NAME = "Local (in-browser)";
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,6 +18,7 @@ function seedSettings() {
     providers: [],
     defaultProviderId: null,
     defaultModel: null,
+    localModels: [],
   };
 }
 
@@ -22,7 +26,10 @@ function load() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      // Tolerate settings persisted before `localModels` existed.
+      if (!Array.isArray(parsed.localModels)) parsed.localModels = [];
+      return parsed;
     } catch {
       // fall through to a fresh seed if the stored value is corrupt
     }
@@ -38,20 +45,60 @@ function findProvider(id) {
   return settings.providers.find((p) => p.id === id);
 }
 
+// The local provider isn't stored in `settings.providers` (it's built-in and
+// can't be removed) — its model list is the curated catalog plus whatever
+// custom GGUF URLs the user has added.
+function getLocalModels() {
+  return [...LOCAL_MODEL_CATALOG, ...(settings.localModels ?? [])];
+}
+
+function findLocalModel(id) {
+  return getLocalModels().find((m) => m.id === id);
+}
+
 /// Keeps `defaultProviderId`/`defaultModel` pointing at something that still
 /// exists, falling back to the first provider/model after any removal.
 function ensureValidDefaults() {
+  if (settings.defaultProviderId === LOCAL_PROVIDER_ID) {
+    if (!findLocalModel(settings.defaultModel)) {
+      settings.defaultModel = getLocalModels()[0]?.id ?? null;
+    }
+    return;
+  }
   let provider = findProvider(settings.defaultProviderId);
   if (!provider) {
     provider = settings.providers[0];
     settings.defaultProviderId = provider?.id ?? null;
   }
-  if (!provider || !provider.models.includes(settings.defaultModel)) {
-    settings.defaultModel = provider?.models[0] ?? null;
+  if (!provider) {
+    // No remote provider configured — fall back to the built-in local one,
+    // so a fresh install is usable without any setup at all.
+    settings.defaultProviderId = LOCAL_PROVIDER_ID;
+    settings.defaultModel = getLocalModels()[0]?.id ?? null;
+    return;
+  }
+  if (!provider.models.includes(settings.defaultModel)) {
+    settings.defaultModel = provider.models[0] ?? null;
   }
 }
 
 export function getCurrentConfig() {
+  if (settings.defaultProviderId === LOCAL_PROVIDER_ID) {
+    const model = findLocalModel(settings.defaultModel);
+    if (!model) return null;
+    return {
+      provider_type: "local",
+      model: model.name,
+      model_url: model.url,
+      // Not sent to the agent — for the caller to attach to session
+      // metadata. `modelId` is what `#model-select` uses as option value
+      // (unlike remote providers, where the model name is the value), so
+      // session restore needs it to re-select the model.
+      providerId: LOCAL_PROVIDER_ID,
+      providerName: LOCAL_PROVIDER_NAME,
+      modelId: model.id,
+    };
+  }
   const provider = findProvider(settings.defaultProviderId);
   if (!provider || !settings.defaultModel) return null;
   return {
@@ -199,6 +246,109 @@ function renderProviderBlock(provider) {
   return block;
 }
 
+function renderLocalModelTag(model, { removable, isDefaultProvider, tags }) {
+  const isDefaultModel = isDefaultProvider && model.id === settings.defaultModel;
+
+  const tag = document.createElement("span");
+  tag.className = "model-tag" + (isDefaultModel ? " is-default" : "");
+
+  const selectBtn = document.createElement("button");
+  selectBtn.type = "button";
+  selectBtn.className = "model-tag-select";
+  selectBtn.title = "Use as default model";
+  selectBtn.textContent = model.name;
+  selectBtn.addEventListener("click", () => {
+    settings.defaultProviderId = LOCAL_PROVIDER_ID;
+    settings.defaultModel = model.id;
+    persist();
+    renderAll();
+  });
+  tag.appendChild(selectBtn);
+
+  if (removable) {
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "icon-btn";
+    removeBtn.textContent = "✕";
+    removeBtn.title = "Remove model";
+    removeBtn.addEventListener("click", () => {
+      settings.localModels = settings.localModels.filter((m) => m.id !== model.id);
+      ensureValidDefaults();
+      persist();
+      renderAll();
+    });
+    tag.appendChild(removeBtn);
+  }
+
+  tags.appendChild(tag);
+}
+
+function renderLocalProviderBlock() {
+  const container = $("local-provider");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const block = document.createElement("div");
+  block.className = "provider";
+
+  const header = document.createElement("div");
+  header.className = "provider-header";
+  const name = document.createElement("span");
+  name.className = "provider-name";
+  name.textContent = LOCAL_PROVIDER_NAME;
+  header.appendChild(name);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "Runs fully client-side via wllama/WebGPU — no API key, no server. " +
+    "Models download on first use (roughly 150–650 MB) and are cached in " +
+    "the browser for later runs.";
+
+  const isDefaultProvider = settings.defaultProviderId === LOCAL_PROVIDER_ID;
+
+  const modelsSection = document.createElement("div");
+  modelsSection.className = "models";
+
+  const modelsLabel = document.createElement("label");
+  modelsLabel.textContent = "Models";
+  modelsSection.appendChild(modelsLabel);
+
+  const tags = document.createElement("div");
+  tags.className = "model-tags";
+  for (const model of LOCAL_MODEL_CATALOG) {
+    renderLocalModelTag(model, { removable: false, isDefaultProvider, tags });
+  }
+  for (const model of settings.localModels ?? []) {
+    renderLocalModelTag(model, { removable: true, isDefaultProvider, tags });
+  }
+  modelsSection.appendChild(tags);
+
+  const addModelRow = document.createElement("div");
+  addModelRow.className = "add-model-row";
+  const newModelUrlInput = document.createElement("input");
+  newModelUrlInput.placeholder = "https://…/model.gguf";
+  const addModelBtn = document.createElement("button");
+  addModelBtn.type = "button";
+  addModelBtn.textContent = "Add model";
+  addModelBtn.addEventListener("click", () => {
+    const url = newModelUrlInput.value.trim();
+    if (!url) return;
+    const name = url.split("/").pop() || url;
+    settings.localModels = settings.localModels ?? [];
+    settings.localModels.push({ id: uid(), name, url });
+    newModelUrlInput.value = "";
+    ensureValidDefaults();
+    persist();
+    renderAll();
+  });
+  addModelRow.append(newModelUrlInput, addModelBtn);
+  modelsSection.appendChild(addModelRow);
+
+  block.append(header, hint, modelsSection);
+  container.appendChild(block);
+}
+
 function renderProviderList() {
   const container = $("provider-list");
   container.innerHTML = "";
@@ -217,25 +367,38 @@ function renderProviderList() {
 function renderProviderSelect() {
   const select = $("provider-select");
   select.innerHTML = "";
+
   for (const p of settings.providers) {
     const opt = document.createElement("option");
     opt.value = p.id;
     opt.textContent = p.name;
     select.appendChild(opt);
   }
+
+  // Built-in, always available — not one of the user-configured providers.
+  const localOpt = document.createElement("option");
+  localOpt.value = LOCAL_PROVIDER_ID;
+  localOpt.textContent = LOCAL_PROVIDER_NAME;
+  select.appendChild(localOpt);
+
   select.value = settings.defaultProviderId ?? "";
-  select.disabled = settings.providers.length === 0;
+  select.disabled = false;
 }
 
 function renderModelSelect() {
   const select = $("model-select");
   select.innerHTML = "";
-  const provider = findProvider(settings.defaultProviderId);
-  const models = provider?.models ?? [];
-  for (const m of models) {
+  const isLocal = settings.defaultProviderId === LOCAL_PROVIDER_ID;
+  const models = isLocal
+    ? getLocalModels().map((m) => ({ value: m.id, label: m.name }))
+    : (findProvider(settings.defaultProviderId)?.models ?? []).map((m) => ({
+        value: m,
+        label: m,
+      }));
+  for (const { value, label } of models) {
     const opt = document.createElement("option");
-    opt.value = m;
-    opt.textContent = m;
+    opt.value = value;
+    opt.textContent = label;
     select.appendChild(opt);
   }
   select.value = settings.defaultModel ?? "";
@@ -244,6 +407,7 @@ function renderModelSelect() {
 
 function renderAll() {
   renderProviderList();
+  renderLocalProviderBlock();
   renderProviderSelect();
   renderModelSelect();
 }

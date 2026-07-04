@@ -1,4 +1,5 @@
 pub mod openai_completions;
+pub mod openai_wire;
 
 use async_trait::async_trait;
 

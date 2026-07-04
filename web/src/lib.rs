@@ -2,9 +2,16 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use cooper_core::agent::{self, AgentEventsHandler, AgentMessageChunk, Message, ToolCall, Usage};
+use cooper_core::agent::{
+    self, AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall, Usage,
+};
+use cooper_core::providers::Provider;
 use cooper_core::providers::openai_completions::OpenAICompletionsAPI;
+use cooper_core::providers::openai_wire::{
+    ApiCompletionRequest, ApiMessage, ApiStreamChunk, ApiTool, ChatStreamAccumulator,
+};
 use cooper_core::tools::{Tool, ToolSchema};
+use futures_util::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -22,7 +29,11 @@ struct ContextFile {
 
 #[derive(Deserialize)]
 struct AgentConfig {
+    /// Unused (and may be omitted) when a completion bridge is set — the
+    /// local provider has no endpoint to talk to.
+    #[serde(default)]
     base_url: String,
+    #[serde(default)]
     api_key: String,
     model: String,
     #[serde(default)]
@@ -88,6 +99,88 @@ fn js_error_to_string(value: &JsValue) -> String {
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
+/// `Provider` backed by a JS completion function instead of HTTP — the
+/// in-browser local-model path (wllama). The JS side is called as
+/// `complete_fn(request_json, on_chunk) -> Promise<void>`, where
+/// `request_json` is a standard OpenAI `chat.completions` request (wllama's
+/// `createChatCompletion` accepts exactly this shape) and `on_chunk` must be
+/// invoked with each streamed `chat.completion.chunk` as a JSON string.
+///
+/// Chunks flow through an unbounded channel because the `on_chunk` closure
+/// handed to JS must be `'static`, while `handler` is a borrow — so the
+/// closure only forwards strings, and this method drains them concurrently
+/// with awaiting the completion promise (single-threaded wasm: chunks only
+/// arrive while suspended at an `.await`, so nothing is lost).
+struct JsBridgeProvider {
+    model: String,
+    complete_fn: js_sys::Function,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider for JsBridgeProvider {
+    async fn complete_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        handler: &dyn AgentEventsHandler,
+    ) -> Result<(Message, FinishReason), Box<dyn std::error::Error>> {
+        let request = ApiCompletionRequest {
+            model: self.model.clone(),
+            messages: messages.iter().map(ApiMessage::from).collect(),
+            tools: tools.iter().map(ApiTool::from).collect(),
+            stream: true,
+            stream_options: None,
+        };
+        let request_json = serde_json::to_string(&request)?;
+
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<String>();
+        let on_chunk = Closure::wrap(Box::new(move |chunk: JsValue| {
+            if let Some(json) = chunk.as_string() {
+                let _ = tx.unbounded_send(json);
+            }
+        }) as Box<dyn FnMut(JsValue)>);
+
+        let promise = self
+            .complete_fn
+            .call2(
+                &JsValue::NULL,
+                &JsValue::from_str(&request_json),
+                on_chunk.as_ref().unchecked_ref(),
+            )
+            .map_err(|e| js_error_to_string(&e))?;
+        let promise: js_sys::Promise = promise
+            .dyn_into()
+            .map_err(|_| "local provider bridge did not return a promise".to_string())?;
+
+        let mut acc = ChatStreamAccumulator::new();
+        let done = wasm_bindgen_futures::JsFuture::from(promise).fuse();
+        futures_util::pin_mut!(done);
+        loop {
+            futures_util::select! {
+                result = done => {
+                    result.map_err(|e| js_error_to_string(&e))?;
+                    break;
+                }
+                chunk_json = rx.next() => {
+                    match chunk_json {
+                        Some(json) => acc.push(&serde_json::from_str::<ApiStreamChunk>(&json)?, handler),
+                        None => break,
+                    }
+                }
+            }
+        }
+        // The promise can resolve with chunks still queued; flush them. The
+        // closure (and with it the sender) is dropped only after this, so
+        // `try_next` sees every chunk JS managed to emit.
+        while let Ok(json) = rx.try_recv() {
+            acc.push(&serde_json::from_str::<ApiStreamChunk>(&json)?, handler);
+        }
+        drop(on_chunk);
+
+        acc.finish(handler)
+    }
+}
+
 /// Browser-side Cooper agent. Constructed with a JSON config object; tools
 /// are registered separately via `register_tool` since they carry a JS
 /// callback, which isn't representable in the JSON config.
@@ -102,6 +195,7 @@ pub struct WasmAgent {
     config: AgentConfig,
     tools: Vec<RegisteredTool>,
     messages: Rc<RefCell<Vec<Message>>>,
+    completion_bridge: Option<js_sys::Function>,
 }
 
 #[wasm_bindgen]
@@ -117,7 +211,15 @@ impl WasmAgent {
             config,
             tools: Vec::new(),
             messages: Rc::new(RefCell::new(Vec::new())),
+            completion_bridge: None,
         })
+    }
+
+    /// Routes completions through a JS function instead of the built-in
+    /// OpenAI HTTP provider — the local (in-browser model) path. See
+    /// `JsBridgeProvider` for the function's contract.
+    pub fn set_completion_bridge(&mut self, complete_fn: js_sys::Function) {
+        self.completion_bridge = Some(complete_fn);
     }
 
     /// Clears the conversation history, so the next `run_prompt` call starts
@@ -168,11 +270,17 @@ impl WasmAgent {
     /// promise resolves with the final assistant message as a JSON string
     /// (see `MessageDto`), or rejects with an error string.
     pub fn run_prompt(&self, prompt: String, on_event: js_sys::Function) -> js_sys::Promise {
-        let provider = OpenAICompletionsAPI::new(
-            &self.config.base_url,
-            &self.config.api_key,
-            &self.config.model,
-        );
+        let provider: Box<dyn Provider> = match &self.completion_bridge {
+            Some(complete_fn) => Box::new(JsBridgeProvider {
+                model: self.config.model.clone(),
+                complete_fn: complete_fn.clone(),
+            }),
+            None => Box::new(OpenAICompletionsAPI::new(
+                &self.config.base_url,
+                &self.config.api_key,
+                &self.config.model,
+            )),
+        };
         let system_prompt_template = self.config.system_prompt_template.clone();
         let agent_instructions = self.config.agent_instructions.clone();
         let context_files: HashMap<String, String> = self
@@ -210,7 +318,7 @@ impl WasmAgent {
                 &context_files,
                 None,
                 &tool_registry,
-                &provider,
+                provider.as_ref(),
                 &handler,
             )
             .await;

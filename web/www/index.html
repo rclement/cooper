@@ -34,7 +34,10 @@
               <p class="hint">
                 Runs entirely client-side, in a Web Worker running a wasm
                 build of the same agent core as the CLI. No server-side proxy
-                — your API key and prompts never leave the browser.
+                — your API key and prompts never leave the browser. With the
+                Local (in-browser) provider, even the model runs in the
+                browser via wllama/WebGPU — no network calls after the model
+                download.
               </p>
 
               <section class="prompt-area">
@@ -118,6 +121,8 @@
         </section>
 
         <section id="view-settings" class="view">
+          <div id="local-provider" class="provider-list"></div>
+
           <div id="provider-list" class="provider-list"></div>
 
           <form id="add-provider-form" class="add-provider-form">

@@ -266,6 +266,16 @@ pub async fn get_saved_session_history_lengths(
 /// Sets the prompt textarea, clicks Run, and waits for the run to finish
 /// (status becomes "done"), returning an error if it errors out or times out.
 pub async fn run_prompt(page: &Page, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    run_prompt_with_timeout(page, prompt, Duration::from_secs(15)).await
+}
+
+/// `run_prompt` with a caller-chosen timeout — the local-provider smoke test
+/// needs room for a real model download plus CPU inference, not 15s.
+pub async fn run_prompt_with_timeout(
+    page: &Page,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
     let js = format!(
         "document.getElementById('prompt').value = {}; document.getElementById('run').click();",
         serde_json::to_string(prompt)?
@@ -273,7 +283,6 @@ pub async fn run_prompt(page: &Page, prompt: &str) -> Result<(), Box<dyn std::er
     page.evaluate(js).await?;
 
     let start = Instant::now();
-    let timeout = Duration::from_secs(15);
     loop {
         let status: String = page
             .evaluate("document.getElementById('status')?.textContent ?? ''")

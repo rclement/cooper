@@ -152,7 +152,41 @@ function appendUsage(event) {
   current = { type: null, body: null, preview: null, raw: "", icon: null };
 }
 
+// Placeholder block shown while a local model is prefilling/decoding but
+// hasn't streamed anything yet (the silent stretch right after the prompt —
+// and after every tool result). The first real event replaces it, so it
+// only ever lives at the bottom of the timeline.
+let generatingEl = null;
+
+function showGenerating() {
+  if (generatingEl) return;
+  const el = document.createElement("div");
+  el.className = "block block-generating";
+
+  const header = document.createElement("div");
+  header.className = "block-header";
+
+  const icon = document.createElement("span");
+  icon.className = "block-icon is-active";
+  icon.textContent = "◌";
+
+  const label = document.createElement("span");
+  label.className = "block-label";
+  label.textContent = "Generating";
+
+  header.append(icon, label);
+  el.appendChild(header);
+  $("timeline").appendChild(el);
+  generatingEl = el;
+}
+
+function clearGenerating() {
+  generatingEl?.remove();
+  generatingEl = null;
+}
+
 function handleEvent(event) {
+  clearGenerating();
   switch (event.type) {
     case "system_prompt":
       appendSystemPrompt(event.text);
@@ -195,6 +229,7 @@ function uid() {
 function clearTimeline() {
   $("timeline").innerHTML = "";
   current = { type: null, body: null, preview: null, raw: "", icon: null };
+  generatingEl = null;
 }
 
 function startNewSession() {
@@ -212,6 +247,7 @@ worker.onmessage = (message) => {
     handleEvent(msg.event);
   } else if (msg.type === "done") {
     stopPulse();
+    clearGenerating();
     $("status").textContent = "done";
     $("run").disabled = false;
     if (currentSession) {
@@ -221,12 +257,30 @@ worker.onmessage = (message) => {
     }
   } else if (msg.type === "error") {
     stopPulse();
+    clearGenerating();
     $("status").textContent = `error: ${msg.error}`;
     $("run").disabled = false;
     if (currentSession && msg.history) {
       currentSession.updatedAt = Date.now();
       currentSession.history = msg.history;
       saveSession(currentSession).then(renderSessionList);
+    }
+  } else if (msg.type === "model_status") {
+    if (msg.status === "generating") showGenerating();
+    $("status").textContent =
+      msg.status === "loading"
+        ? "loading local model…"
+        : msg.status === "generating"
+          ? "generating…"
+          : "running…";
+  } else if (msg.type === "model_progress") {
+    const loadedMb = (msg.loaded / (1024 * 1024)).toFixed(0);
+    if (msg.total) {
+      const totalMb = (msg.total / (1024 * 1024)).toFixed(0);
+      const pct = Math.round((msg.loaded / msg.total) * 100);
+      $("status").textContent = `downloading model… ${pct}% (${loadedMb} / ${totalMb} MB)`;
+    } else {
+      $("status").textContent = `downloading model… ${loadedMb} MB`;
     }
   }
 };
@@ -260,6 +314,9 @@ $("run").addEventListener("click", () => {
       providerName: providerConfig.providerName,
       providerId: providerConfig.providerId,
       model: providerConfig.model,
+      // Local models: the select's option value is the catalog id, not the
+      // display name stored in `model` — needed to re-select on restore.
+      modelId: providerConfig.modelId ?? providerConfig.model,
       history: null,
     };
   }
@@ -330,7 +387,7 @@ function loadSession(session) {
   providerSelect.value = session.providerId;
   providerSelect.dispatchEvent(new Event("change"));
   const modelSelect = $("model-select");
-  modelSelect.value = session.model;
+  modelSelect.value = session.modelId ?? session.model;
   modelSelect.dispatchEvent(new Event("change"));
 
   $("status").textContent =

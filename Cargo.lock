@@ -474,6 +474,8 @@ dependencies = [
  "async-trait",
  "console_error_panic_hook",
  "cooper-core",
+ "futures-channel",
+ "futures-util",
  "js-sys",
  "serde",
  "serde_json",
