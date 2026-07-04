@@ -438,6 +438,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cooper-dev-server"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "tokio",
+ "tower-http 0.6.11",
+]
+
+[[package]]
 name = "cooper-e2e"
 version = "0.0.0"
 dependencies = [
