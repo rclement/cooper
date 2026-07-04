@@ -33,6 +33,13 @@ if (typeof document === "undefined") {
 const ready = init();
 let agent = null;
 
+// Armed at the start of each local run; a { type: "stop" } message aborts
+// the in-flight completion. wllama surfaces the abort between streamed
+// chunks, so it takes effect immediately while decoding but only at the
+// first token when still prefilling (the main thread escalates to
+// terminating the whole worker if this isn't enough).
+let activeAbort = null;
+
 // One wllama instance for the worker's lifetime; reloading only when the
 // requested model changes (loadModelFromUrl may be called repeatedly on the
 // same instance). Created lazily so the OpenAI-provider path never pays for
@@ -87,34 +94,50 @@ async function ensureLocalModel(modelUrl) {
 // this shape on both sides, so this is a thin adapter.
 async function localCompletion(requestJson, onChunk) {
   const request = JSON.parse(requestJson);
+  const signal = activeAbort?.signal;
   // Fires on every completion round — including the ones after tool results
   // — so the UI can show that the model is prefilling/decoding rather than
   // sitting silent until the first token (which on CPU can take a while).
   self.postMessage({ type: "model_status", status: "generating" });
-  const chunks = await wllama.createChatCompletion({
-    messages: request.messages,
-    // An empty tools array would still trigger tool-call formatting in some
-    // chat templates; omit it entirely when no tools are registered.
-    tools: request.tools?.length ? request.tools : undefined,
-    stream: true,
-    // Reuse the KV cache across rounds: without this, every tool-call
-    // round re-prefills the entire conversation from token zero, which
-    // dominates latency on CPU. (Forwarded verbatim to the underlying
-    // llama-server request handler.)
-    cache_prompt: true,
-  });
-  for await (const chunk of chunks) {
-    onChunk(JSON.stringify(chunk));
+  try {
+    const chunks = await wllama.createChatCompletion({
+      messages: request.messages,
+      // An empty tools array would still trigger tool-call formatting in some
+      // chat templates; omit it entirely when no tools are registered.
+      tools: request.tools?.length ? request.tools : undefined,
+      stream: true,
+      // Reuse the KV cache across rounds: without this, every tool-call
+      // round re-prefills the entire conversation from token zero, which
+      // dominates latency on CPU. (Forwarded verbatim to the underlying
+      // llama-server request handler.)
+      cache_prompt: true,
+      abortSignal: signal,
+    });
+    for await (const chunk of chunks) {
+      onChunk(JSON.stringify(chunk));
+    }
+  } catch (err) {
+    // A user-requested stop isn't an error: return normally so the agent
+    // loop completes the turn with whatever partial output was streamed
+    // (and the conversation history stays continuable).
+    if (signal?.aborted) return;
+    throw err;
   }
 }
 
 self.onmessage = async (message) => {
+  if (message.data?.type === "stop") {
+    activeAbort?.abort();
+    return;
+  }
+
   const { prompt, config, enabledTools, newSession, restoreHistory } = message.data;
 
   try {
     await ready;
 
     if (config.provider_type === "local") {
+      activeAbort = new AbortController();
       await ensureLocalModel(config.model_url);
     }
 
@@ -153,5 +176,7 @@ self.onmessage = async (message) => {
       error: String(err),
       history: agent?.export_history(),
     });
+  } finally {
+    activeAbort = null;
   }
 };

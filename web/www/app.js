@@ -5,7 +5,16 @@ import { initContext, getContextConfig, getEnabledToolNames } from "./context.js
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
 
-const worker = new Worker("worker.js", { type: "module" });
+// `let` + factory (not a one-shot const): the Stop button's escalation path
+// terminates the worker mid-run — losing the in-memory agent and, for local
+// models, the loaded weights — and replaces it with a fresh one. Sessions
+// still resume afterwards because run messages carry `restoreHistory`.
+let worker = null;
+
+function createWorker() {
+  worker = new Worker("worker.js", { type: "module" });
+  worker.onmessage = handleWorkerMessage;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -241,7 +250,7 @@ function startNewSession() {
 
 $("new-session").addEventListener("click", startNewSession);
 
-worker.onmessage = (message) => {
+function handleWorkerMessage(message) {
   const msg = message.data;
   if (msg.type === "event") {
     handleEvent(msg.event);
@@ -249,7 +258,7 @@ worker.onmessage = (message) => {
     stopPulse();
     clearGenerating();
     $("status").textContent = "done";
-    $("run").disabled = false;
+    setRunning(false);
     if (currentSession) {
       currentSession.updatedAt = Date.now();
       currentSession.history = msg.history;
@@ -259,7 +268,7 @@ worker.onmessage = (message) => {
     stopPulse();
     clearGenerating();
     $("status").textContent = `error: ${msg.error}`;
-    $("run").disabled = false;
+    setRunning(false);
     if (currentSession && msg.history) {
       currentSession.updatedAt = Date.now();
       currentSession.history = msg.history;
@@ -283,7 +292,39 @@ worker.onmessage = (message) => {
       $("status").textContent = `downloading model… ${loadedMb} MB`;
     }
   }
-};
+}
+
+createWorker();
+
+// Stop handling: two levels. For a local run, the first click asks the
+// worker to abort the in-flight completion (the turn then completes with
+// whatever partial output exists, and the loaded model survives). A second
+// click — or any click during a remote run, whose HTTP request can't be
+// cancelled from here — terminates the worker outright and replaces it.
+let runningIsLocal = false;
+let stopRequested = false;
+
+function setRunning(running) {
+  $("run").disabled = running;
+  $("stop").disabled = !running;
+  if (!running) stopRequested = false;
+}
+
+$("stop").addEventListener("click", () => {
+  if ($("stop").disabled) return;
+  if (runningIsLocal && !stopRequested) {
+    stopRequested = true;
+    $("status").textContent = "stopping…";
+    worker.postMessage({ type: "stop" });
+    return;
+  }
+  worker.terminate();
+  createWorker();
+  stopPulse();
+  clearGenerating();
+  $("status").textContent = "stopped";
+  setRunning(false);
+});
 
 $("run").addEventListener("click", () => {
   const prompt = $("prompt").value.trim();
@@ -323,7 +364,8 @@ $("run").addEventListener("click", () => {
 
   appendPrompt(prompt);
   $("status").textContent = "running…";
-  $("run").disabled = true;
+  runningIsLocal = config.provider_type === "local";
+  setRunning(true);
   $("prompt").value = "";
 
   worker.postMessage({
