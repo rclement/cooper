@@ -2,7 +2,7 @@
 // system prompt template override, agent instructions (an AGENTS.md
 // equivalent), and context files fetched by URL. Persisted to localStorage,
 // same pattern as settings.js.
-import { BUILTIN_TOOLS } from "./builtin-tools.js";
+import { ALL_TOOLS } from "./tools.js";
 
 const STORAGE_KEY = "cooper.context.v1";
 
@@ -16,7 +16,7 @@ function uid() {
 
 function seed() {
   return {
-    enabledTools: Object.fromEntries(Object.keys(BUILTIN_TOOLS).map((name) => [name, true])),
+    enabledTools: Object.fromEntries(Object.keys(ALL_TOOLS).map((name) => [name, true])),
     systemPromptTemplate: "",
     agentInstructions: "",
     contextFiles: [],
@@ -78,7 +78,7 @@ function renderToolList() {
   const container = $("tool-list");
   container.innerHTML = "";
 
-  for (const [name, tool] of Object.entries(BUILTIN_TOOLS)) {
+  for (const [name, tool] of Object.entries(ALL_TOOLS)) {
     const row = document.createElement("label");
     row.className = "tool-row";
 

@@ -16,6 +16,11 @@
           <span>Sessions</span>
         </button>
 
+        <button class="nav-item" data-view="workspace" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>
+          <span>Workspace</span>
+        </button>
+
         <button class="nav-item" data-view="settings" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
           <span>Settings</span>
@@ -121,6 +126,75 @@
               </div>
             </aside>
           </div>
+        </section>
+
+        <section id="view-workspace" class="view">
+          <p class="hint">
+            A virtual filesystem, private to this browser (backed by OPFS —
+            the Origin Private File System). Explore, edit, and upload files
+            by hand here, or let the agent read/write it directly via the
+            <code>list_files</code>, <code>read_file</code>,
+            <code>write_file</code>, <code>edit_file</code>, and
+            <code>git_clone</code> tools (toggle them in the Tools panel on
+            the Sessions view).
+          </p>
+
+          <div class="ws-app">
+            <div class="ws-toolbar">
+              <button id="ws-btn-new-file" type="button" class="secondary">New File</button>
+              <button id="ws-btn-new-folder" type="button" class="secondary">New Folder</button>
+              <button id="ws-btn-upload" type="button" class="secondary">Upload</button>
+              <button id="ws-btn-fetch-url" type="button" class="secondary">Fetch from URL</button>
+              <button id="ws-btn-clone-repo" type="button" class="secondary">Clone Git Repo</button>
+              <button id="ws-btn-refresh" type="button" class="secondary">Refresh</button>
+              <input type="file" id="ws-file-input" multiple hidden />
+            </div>
+
+            <div class="ws-body">
+              <aside class="ws-sidebar">
+                <div class="ws-tree-container">
+                  <ul id="ws-tree-root" class="ws-tree"></ul>
+                </div>
+                <div class="ws-storage-panel">
+                  <div class="ws-storage-label">Storage usage</div>
+                  <div class="ws-storage-bar-track">
+                    <div id="ws-storage-bar-fill" class="ws-storage-bar-fill"></div>
+                  </div>
+                  <div id="ws-storage-text" class="ws-storage-text">calculating…</div>
+                  <div id="ws-workspace-size-text" class="ws-storage-text">Workspace files: calculating…</div>
+                </div>
+              </aside>
+
+              <main class="ws-content">
+                <div id="ws-breadcrumb" class="ws-breadcrumb"></div>
+                <table class="ws-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Size</th>
+                      <th>Modified</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ws-entries-body"></tbody>
+                </table>
+                <div id="ws-empty-state" class="ws-empty-state" hidden>This directory is empty.</div>
+              </main>
+            </div>
+          </div>
+
+          <div id="ws-modal-overlay" class="ws-modal-overlay" hidden>
+            <div class="ws-modal-box">
+              <div class="ws-modal-header">
+                <span id="ws-modal-title"></span>
+                <button id="ws-modal-close" type="button" class="ws-modal-close">&times;</button>
+              </div>
+              <div id="ws-modal-content" class="ws-modal-content"></div>
+            </div>
+          </div>
+
+          <div id="ws-toast-container" class="ws-toast-container"></div>
         </section>
 
         <section id="view-settings" class="view">

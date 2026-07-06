@@ -4,6 +4,7 @@ import { initSettings, getCurrentConfig } from "./settings.js";
 import { initContext, getContextConfig, getEnabledToolNames } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
+import { initWorkspace } from "./workspace.js";
 
 // `let` + factory (not a one-shot const): the Stop button's escalation path
 // terminates the worker mid-run — losing the in-memory agent and, for local
@@ -20,6 +21,7 @@ const $ = (id) => document.getElementById(id);
 
 initSettings();
 initContext();
+initWorkspace();
 
 for (const navItem of document.querySelectorAll(".nav-item")) {
   navItem.addEventListener("click", () => {
