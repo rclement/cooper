@@ -141,20 +141,30 @@ export function isSubPath(candidateParentPath, candidatePath) {
 
 // ---------- Path-string convenience wrappers (used by agent tools) ----------
 
-export async function readFileText(path) {
+async function getFileHandleAt(path) {
   const segments = toSegments(path);
   if (segments.length === 0) throw new Error("A file path is required.");
   const name = segments.pop();
   const dirHandle = await resolveDir(segments, false, path);
-  let fileHandle;
   try {
-    fileHandle = await dirHandle.getFileHandle(name);
+    return await dirHandle.getFileHandle(name);
   } catch (err) {
     if (err.name === "NotFoundError") throw new Error(`No such file: "${path}"`);
     throw err;
   }
+}
+
+export async function readFileText(path) {
+  const fileHandle = await getFileHandleAt(path);
   const file = await fileHandle.getFile();
   return file.text();
+}
+
+/// Returns the file as a `File` (a `Blob`) rather than decoding it as text —
+/// for binary content (images, etc.) headed straight for an object URL.
+export async function readFileBlob(path) {
+  const fileHandle = await getFileHandleAt(path);
+  return fileHandle.getFile();
 }
 
 export async function writeFileText(path, content) {
