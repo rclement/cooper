@@ -141,7 +141,7 @@ export function isSubPath(candidateParentPath, candidatePath) {
 
 // ---------- Path-string convenience wrappers (used by agent tools) ----------
 
-async function getFileHandleAt(path) {
+export async function getFileHandleAt(path) {
   const segments = toSegments(path);
   if (segments.length === 0) throw new Error("A file path is required.");
   const name = segments.pop();
