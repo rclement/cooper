@@ -5,6 +5,7 @@ import { initContext, getContextConfig, getEnabledToolNames } from "./context.js
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
 import { initWorkspace, refreshWorkspace } from "./workspace.js";
+import { initAnalytics, refreshAnalytics } from "./analytics.js";
 import { parseChartCall } from "./chart-common.js";
 import { renderChart } from "./chart-render.js";
 import { renderImage, renderSvg } from "./media-render.js";
@@ -25,6 +26,7 @@ const $ = (id) => document.getElementById(id);
 initSettings();
 initContext();
 initWorkspace();
+initAnalytics();
 
 for (const navItem of document.querySelectorAll(".nav-item")) {
   navItem.addEventListener("click", () => {
@@ -35,6 +37,7 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
       view.classList.toggle("is-active", view.id === `view-${navItem.dataset.view}`);
     }
     if (navItem.dataset.view === "workspace") refreshWorkspace();
+    if (navItem.dataset.view === "analytics") refreshAnalytics();
   });
 }
 
@@ -246,6 +249,19 @@ function appendUsage(event) {
     ` · ${event.prompt_tokens} prompt · ${event.completion_tokens} completion`;
   $("timeline").appendChild(el);
   current = { type: null, body: null, preview: null, raw: "", icon: null };
+
+  // Each usage event is one completion round's totals (a turn can have
+  // several — the initial response plus one per tool-result follow-up).
+  // Persisted alongside `history` so the analytics view has real token data
+  // instead of numbers that vanish the moment the timeline scrolls past them.
+  if (currentSession) {
+    (currentSession.usageEvents ??= []).push({
+      at: Date.now(),
+      promptTokens: event.prompt_tokens,
+      completionTokens: event.completion_tokens,
+      totalTokens: event.total_tokens,
+    });
+  }
 }
 
 // Placeholder block shown while a local model is prefilling/decoding but
@@ -446,6 +462,7 @@ $("run").addEventListener("click", () => {
       // display name stored in `model` — needed to re-select on restore.
       modelId: providerConfig.modelId ?? providerConfig.model,
       history: null,
+      usageEvents: [],
     };
   }
 
