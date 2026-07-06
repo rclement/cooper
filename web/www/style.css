@@ -897,6 +897,40 @@ details:not([open]) > .block-body {
   padding-top: 0.1em;
 }
 
+/* Image / SVG: same treatment as Chart — always expanded, accent-colored. */
+.block-image .block-label,
+.block-image .block-icon,
+.block-svg .block-label,
+.block-svg .block-icon {
+  color: var(--accent);
+}
+
+.block-image .block-body,
+.block-svg .block-body {
+  font-family: inherit;
+  white-space: normal;
+  padding-top: 0.1em;
+}
+
+.media-caption {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+}
+
+.media-image {
+  display: block;
+  max-width: 100%;
+  max-height: 32rem;
+  border-radius: 0.5em;
+  border: 1px solid var(--border);
+}
+
+.media-svg {
+  max-width: 100%;
+  max-height: 32rem;
+}
+
 /* ---------- Chart rendering (chart-render.js) ---------- */
 
 .chart-viz {
