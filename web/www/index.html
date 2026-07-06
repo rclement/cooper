@@ -86,13 +86,18 @@
               <div class="context-section">
                 <h3>Context files</h3>
                 <p class="hint">
-                  Fetched by URL when added (subject to CORS) and forwarded
-                  to the agent as extra context.
+                  Fetched once when added — by URL (subject to CORS) or by
+                  path from the Workspace — and forwarded to the agent as
+                  extra context. Nothing is added automatically.
                 </p>
                 <div id="context-file-list" class="context-file-list"></div>
                 <form id="add-context-file-form" class="add-context-file-form">
                   <input id="new-context-file-url" placeholder="https://…" />
-                  <button type="submit">Add</button>
+                  <button type="submit">Add URL</button>
+                </form>
+                <form id="add-context-file-workspace-form" class="add-context-file-form">
+                  <input id="new-context-file-path" placeholder="path/in/workspace.txt" />
+                  <button type="submit">Add file</button>
                 </form>
               </div>
 
