@@ -693,6 +693,8 @@ function wireToolbar() {
   });
 }
 
+let supported = false;
+
 export async function initWorkspace() {
   if (!("storage" in navigator) || !navigator.storage.getDirectory) {
     const view = $("view-workspace");
@@ -701,6 +703,17 @@ export async function initWorkspace() {
     return;
   }
 
+  supported = true;
   wireToolbar();
+  await renderAll();
+}
+
+// Re-reads the workspace from OPFS. Called whenever the Workspace nav item
+// is (re-)selected — files can have changed since the view was last shown,
+// either from an agent run's tool calls or the "New session" flow spinning
+// up a Worker with its own OPFS handle, so a stale in-memory listing would
+// otherwise linger until a manual "Refresh" click.
+export async function refreshWorkspace() {
+  if (!supported) return;
   await renderAll();
 }
