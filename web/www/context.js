@@ -3,6 +3,7 @@
 // equivalent), and context files fetched by URL. Persisted to localStorage,
 // same pattern as settings.js.
 import { ALL_TOOLS } from "./tools.js";
+import { readFileText } from "./workspace-fs.js";
 
 const STORAGE_KEY = "cooper.context.v1";
 
@@ -141,7 +142,7 @@ function renderFileList() {
 
     const path = document.createElement("span");
     path.className = "context-file-path";
-    path.textContent = file.path;
+    path.textContent = (file.source === "workspace" ? "📁 " : "🌐 ") + file.path;
 
     const status = document.createElement("span");
     status.className = "context-file-status";
@@ -180,6 +181,7 @@ async function addContextFileFromUrl(url) {
     content: "",
     error: null,
     loading: true,
+    source: "url",
   };
   context.contextFiles.push(file);
   persist();
@@ -189,6 +191,35 @@ async function addContextFileFromUrl(url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     file.content = await res.text();
+  } catch (err) {
+    file.error = err.message ?? String(err);
+  } finally {
+    file.loading = false;
+    persist();
+    renderFileList();
+  }
+}
+
+// Reads a file out of the Workspace (OPFS) at the moment it's added — a
+// one-time snapshot, same as a URL fetch, not a live link. If the workspace
+// file changes afterwards, re-add it to refresh the snapshot; this keeps
+// "what's injected into the prompt" exactly equal to what's listed here,
+// with no hidden re-fetching behind the scenes.
+async function addContextFileFromWorkspace(path) {
+  const file = {
+    id: uid(),
+    path,
+    content: "",
+    error: null,
+    loading: true,
+    source: "workspace",
+  };
+  context.contextFiles.push(file);
+  persist();
+  renderFileList();
+
+  try {
+    file.content = await readFileText(path);
   } catch (err) {
     file.error = err.message ?? String(err);
   } finally {
@@ -224,5 +255,14 @@ export function initContext() {
     if (!url) return;
     input.value = "";
     addContextFileFromUrl(url);
+  });
+
+  $("add-context-file-workspace-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = $("new-context-file-path");
+    const path = input.value.trim();
+    if (!path) return;
+    input.value = "";
+    addContextFileFromWorkspace(path);
   });
 }
