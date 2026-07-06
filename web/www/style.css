@@ -885,6 +885,195 @@ details:not([open]) > .block-body {
   color: #d4a24c;
 }
 
+/* Chart: always expanded, like the response block — the point is to be seen. */
+.block-chart .block-label,
+.block-chart .block-icon {
+  color: var(--accent);
+}
+
+.block-chart .block-body {
+  font-family: inherit;
+  white-space: normal;
+  padding-top: 0.1em;
+}
+
+/* ---------- Chart rendering (chart-render.js) ---------- */
+
+.chart-viz {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.chart-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.chart-legend-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.chart-svg-host svg {
+  display: block;
+  overflow: visible;
+}
+
+.chart-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-baseline {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  fill: var(--text-dim);
+  font-size: 9.5px;
+  font-family: var(--mono);
+}
+
+.chart-direct-label {
+  fill: var(--text-dim);
+  font-size: 9.5px;
+  font-family: var(--mono);
+}
+
+.chart-bar-mark {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 0.1s ease;
+}
+
+.chart-bar-mark.is-hovered,
+.chart-bar-mark:focus-visible {
+  opacity: 0.82;
+}
+
+.chart-line-mark {
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-marker-ring {
+  fill: var(--surface);
+}
+
+.chart-scatter-mark {
+  transition: r 0.1s ease;
+}
+
+.chart-scatter-mark.is-hovered {
+  r: 5.5;
+}
+
+.chart-hit-layer {
+  cursor: crosshair;
+  outline: none;
+}
+
+.chart-crosshair {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.chart-toggle {
+  align-self: flex-start;
+  padding: 0.35em 0.8em;
+  font-size: 0.72rem;
+}
+
+.chart-table-host {
+  overflow-x: auto;
+}
+
+.chart-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.chart-table th,
+.chart-table td {
+  text-align: left;
+  padding: 0.4em 0.6em;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-table th {
+  color: var(--text-dim);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.65rem;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.4em;
+  padding: 0.5em 0.65em;
+  font-size: 0.75rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 8rem;
+}
+
+.chart-tooltip-head {
+  color: var(--text-dim);
+  margin-bottom: 0.3em;
+  font-size: 0.72rem;
+}
+
+.chart-tooltip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+}
+
+.chart-tooltip-key {
+  width: 0.6rem;
+  height: 0.15rem;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.chart-tooltip-row strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tooltip-name {
+  color: var(--text-dim);
+}
+
 .tool-line {
   margin: 0.2em 0;
 }

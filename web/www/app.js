@@ -5,6 +5,8 @@ import { initContext, getContextConfig, getEnabledToolNames } from "./context.js
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
 import { initWorkspace, refreshWorkspace } from "./workspace.js";
+import { parseChartCall } from "./chart-common.js";
+import { renderChart } from "./chart-render.js";
 
 // `let` + factory (not a one-shot const): the Stop button's escalation path
 // terminates the worker mid-run — losing the in-memory agent and, for local
@@ -46,6 +48,7 @@ const BLOCK_KIND = {
   reasoning: { label: "Reasoning", icon: "◌", collapsible: true },
   response: { label: "Response", icon: "◆", collapsible: false },
   tool: { label: "Tool", icon: "⚙", collapsible: true },
+  chart: { label: "Chart", icon: "▥", collapsible: false },
 };
 
 // Blocks that represent work happening "behind the scenes" (collapsed by
@@ -126,6 +129,19 @@ function appendResponse(text) {
   current.body.innerHTML = renderMarkdown(current.raw);
 }
 
+// A tool call always gets the normal collapsed "Tool" block — name, full
+// arguments, and (once it arrives) the result — same as every other tool.
+// Nothing is special-cased away: this is the one place to check exactly what
+// the model sent when a chart looks wrong (wrong field, hallucinated rows,
+// stale data), so hiding it behind the pretty chart would trade away the
+// "no black magic" observability the rest of this app is built around.
+//
+// render_chart *additionally* gets a chart block rendered right after,
+// straight from these same arguments — see appendChartBlock. The tool block
+// stays addressable (`pendingToolResultBlock`) so the tool_result that
+// follows lands on it instead of on the chart block that's `current` by then.
+let pendingToolResultBlock = null;
+
 function appendToolCall(event) {
   openBlock("tool");
   const argsPreview = JSON.stringify(event.arguments);
@@ -136,21 +152,52 @@ function appendToolCall(event) {
   current.body.appendChild(line);
 
   current.preview.textContent = truncate(`${event.name} ${argsPreview}`, 60);
+
+  if (event.name === "render_chart") {
+    pendingToolResultBlock = current;
+    appendChartBlock(event);
+  }
+}
+
+// Renders straight from the tool_call's own arguments rather than waiting on
+// the tool_result (which is just a plain confirmation string for the
+// agent's own benefit; see chart-tool.js).
+function appendChartBlock(event) {
+  openBlock("chart");
+  try {
+    const { rows, spec } = parseChartCall(JSON.stringify(event.arguments));
+    renderChart(current.body, rows, spec);
+  } catch (err) {
+    const msg = document.createElement("p");
+    msg.className = "hint";
+    msg.textContent = `Couldn't render chart: ${err.message ?? err}`;
+    current.body.appendChild(msg);
+  }
 }
 
 function appendToolResult(event) {
-  if (current.type !== "tool") openBlock("tool");
+  // Normally the tool block itself is still `current` and gets the result
+  // appended in place. For render_chart, a chart block was opened right
+  // after it, so `current` now points there instead — route the result back
+  // onto the stashed tool block rather than losing it.
+  if (pendingToolResultBlock === null && current.type !== "tool") openBlock("tool");
+  const block = pendingToolResultBlock ?? current;
+  pendingToolResultBlock = null;
+
   const { Ok, Err } = event.result;
   const isError = Err !== undefined;
 
   const line = document.createElement("div");
   line.className = "tool-line tool-result" + (isError ? " is-error" : "");
   line.textContent = isError ? `◀ error: ${Err}` : `◀ ${Ok}`;
-  current.body.appendChild(line);
+  block.body.appendChild(line);
+  block.preview.textContent = `${isError ? "✗" : "✓"} ${block.preview.textContent}`;
 
-  current.preview.textContent = `${isError ? "✗" : "✓"} ${current.preview.textContent}`;
   stopPulse();
-  current.type = null; // next event starts a fresh block, even if also a tool call
+  // Whichever block is actually open right now (the tool block in the
+  // normal case, the chart block for render_chart) — either way, the next
+  // event should start a fresh block rather than appending into this one.
+  current.type = null;
 }
 
 function appendUsage(event) {

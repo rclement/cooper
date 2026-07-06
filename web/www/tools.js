@@ -5,5 +5,6 @@
 import { BUILTIN_TOOLS } from "./builtin-tools.js";
 import { WORKSPACE_TOOLS } from "./workspace-tools.js";
 import { PYTHON_TOOLS } from "./python-tool.js";
+import { CHART_TOOLS } from "./chart-tool.js";
 
-export const ALL_TOOLS = { ...BUILTIN_TOOLS, ...WORKSPACE_TOOLS, ...PYTHON_TOOLS };
+export const ALL_TOOLS = { ...BUILTIN_TOOLS, ...WORKSPACE_TOOLS, ...PYTHON_TOOLS, ...CHART_TOOLS };
