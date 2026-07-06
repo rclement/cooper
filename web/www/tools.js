@@ -4,5 +4,6 @@
 // from this single map so adding a new tool module only means adding it here.
 import { BUILTIN_TOOLS } from "./builtin-tools.js";
 import { WORKSPACE_TOOLS } from "./workspace-tools.js";
+import { PYTHON_TOOLS } from "./python-tool.js";
 
-export const ALL_TOOLS = { ...BUILTIN_TOOLS, ...WORKSPACE_TOOLS };
+export const ALL_TOOLS = { ...BUILTIN_TOOLS, ...WORKSPACE_TOOLS, ...PYTHON_TOOLS };
