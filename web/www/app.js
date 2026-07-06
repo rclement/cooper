@@ -4,7 +4,7 @@ import { initSettings, getCurrentConfig } from "./settings.js";
 import { initContext, getContextConfig, getEnabledToolNames } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
-import { initWorkspace } from "./workspace.js";
+import { initWorkspace, refreshWorkspace } from "./workspace.js";
 
 // `let` + factory (not a one-shot const): the Stop button's escalation path
 // terminates the worker mid-run — losing the in-memory agent and, for local
@@ -31,6 +31,7 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
     for (const view of document.querySelectorAll(".view")) {
       view.classList.toggle("is-active", view.id === `view-${navItem.dataset.view}`);
     }
+    if (navItem.dataset.view === "workspace") refreshWorkspace();
   });
 }
 
