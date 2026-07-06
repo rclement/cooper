@@ -19,7 +19,7 @@
 // { type: 'model_progress', loaded, total } and
 // { type: 'model_status', status: 'loading' | 'ready' } messages.
 import init, { WasmAgent } from "../pkg/cooper_web.js";
-import { BUILTIN_TOOLS } from "./builtin-tools.js";
+import { ALL_TOOLS } from "./tools.js";
 import { Wllama } from "./vendor/wllama/index.js";
 
 // wllama's bundle resolves relative asset paths against `document.baseURI`,
@@ -152,7 +152,7 @@ self.onmessage = async (message) => {
         agent.set_completion_bridge(localCompletion);
       }
       for (const name of enabledTools ?? []) {
-        const tool = BUILTIN_TOOLS[name];
+        const tool = ALL_TOOLS[name];
         if (!tool) continue;
         agent.register_tool(JSON.stringify(tool.schema), tool.execute);
       }
