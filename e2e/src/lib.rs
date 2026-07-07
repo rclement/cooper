@@ -3,13 +3,18 @@
 //! file server for `web/` (so `pkg/` and `www/` are reachable exactly as in
 //! real usage), then drives the app with a real headless Chromium via
 //! `chromiumoxide` (talks directly to the Chrome DevTools Protocol — no
-//! Node.js anywhere in this crate or its dependency graph).
+//! Node.js anywhere in this crate or its dependency graph). The browser
+//! binary itself is fetched and cached by `chromiumoxide_fetcher` rather
+//! than relying on a system install, since distro-packaged Chromium builds
+//! have been known to crash under `--headless` (e.g. Debian dropping
+//! working headless support from its regular `chromium` package).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chromiumoxide::{Browser, BrowserConfig, Page};
+use chromiumoxide_fetcher::{BrowserFetcher, BrowserFetcherOptions, BrowserKind};
 use cooper_mock_server::Fixture;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -148,14 +153,23 @@ impl Drop for BrowserHandle {
 }
 
 pub async fn launch_browser() -> Result<BrowserHandle, Box<dyn std::error::Error>> {
-    let mut builder = BrowserConfig::builder().no_sandbox();
-    // Locally, chromiumoxide's own detection finds a system Chrome/Chromium
-    // install fine. CI provisions one at a less predictable path, so it sets
-    // this env var to point at exactly the binary it installed.
-    if let Ok(path) = std::env::var("CHROMIUM_EXECUTABLE") {
-        builder = builder.chrome_executable(path);
-    }
-    let config = builder.build()?;
+    // `chromiumoxide_fetcher` doesn't create its cache directory before
+    // downloading into it, so it must already exist.
+    let cache_dir = repo_root().join("target/chromiumoxide");
+    std::fs::create_dir_all(&cache_dir)?;
+
+    let fetcher = BrowserFetcher::new(
+        BrowserFetcherOptions::builder()
+            .with_kind(BrowserKind::ChromeHeadlessShell)
+            .with_path(cache_dir)
+            .build()?,
+    );
+    let installation = fetcher.fetch().await?;
+
+    let config = BrowserConfig::builder()
+        .no_sandbox()
+        .chrome_executable(installation.executable_path)
+        .build()?;
     let (browser, mut handler) = Browser::launch(config).await?;
     let handler_task = tokio::spawn(async move { while handler.next().await.is_some() {} });
     Ok(BrowserHandle {

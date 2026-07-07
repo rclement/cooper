@@ -353,7 +353,22 @@ export const opfsFsClient = {
   },
 };
 
-export const GIT_CORS_PROXY = "https://cors.isomorphic-git.org";
+export const PUBLIC_GIT_CORS_PROXY = "https://cors.isomorphic-git.org";
+
+// `cooper web` exposes a same-origin git proxy at /git-proxy (probed once via
+// a bare HEAD request); when the app is served statically without it, clones
+// fall back to isomorphic-git's public proxy. Cached per-context, like the
+// git modules below.
+let gitProxyPromise = null;
+
+export function resolveGitProxy() {
+  if (!gitProxyPromise) {
+    gitProxyPromise = fetch("/git-proxy", { method: "HEAD" })
+      .then((r) => (r.ok ? new URL("/git-proxy", self.location.origin).toString() : PUBLIC_GIT_CORS_PROXY))
+      .catch(() => PUBLIC_GIT_CORS_PROXY);
+  }
+  return gitProxyPromise;
+}
 
 // isomorphic-git ships as CommonJS; esm.sh serves a browser-ready ESM build
 // on the fly (transpiled, cached at the edge) so both the main-thread UI and
@@ -395,7 +410,7 @@ export async function gitClone({ url, destPath, branch, shallow = true, onProgre
     dir: `/${destSegments.join("/")}`,
     url,
     ref: branch || undefined,
-    corsProxy: GIT_CORS_PROXY,
+    corsProxy: await resolveGitProxy(),
     singleBranch: true,
     depth: shallow ? 1 : undefined,
     onProgress,

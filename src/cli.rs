@@ -110,6 +110,16 @@ enum Command {
         #[command(subcommand)]
         action: SessionsCommand,
     },
+    /// Serve the browser app (cross-origin isolated, with a same-origin git proxy)
+    Web {
+        /// Port to listen on
+        #[arg(long, short = 'P', default_value_t = 8080)]
+        port: u16,
+        /// Directory holding the web app (defaults to the `web/` directory of
+        /// the checkout this binary was built from)
+        #[arg(long, short = 'd')]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -397,7 +407,7 @@ fn sessions_list_cmd() {
     };
 
     if saved.is_empty() {
-        println!("No saved sessions yet. Start one with `agent-cooper chat`.");
+        println!("No saved sessions yet. Start one with `cooper chat`.");
         return;
     }
 
@@ -459,6 +469,7 @@ pub async fn run() {
             SessionsCommand::List => sessions_list_cmd(),
             SessionsCommand::Show { id } => sessions_show_cmd(id),
         },
+        Command::Web { port, dir } => crate::web::web_cmd(port, dir).await,
     }
 }
 

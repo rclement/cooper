@@ -1,3 +1,3 @@
 [alias]
 cov = "llvm-cov --workspace --exclude cooper-web --exclude cooper-e2e --ignore-filename-regex (^|/)main\\.rs$|mock-server/src/lib\\.rs$"
-cov-report = "llvm-cov report --ignore-filename-regex (^|/)main\\.rs$|mock-server/src/lib\\.rs$"
+cov-report = "llvm-cov report -p agent-cooper -p cooper-core -p cooper-mock-server --ignore-filename-regex (^|/)main\\.rs$|mock-server/src/lib\\.rs$"

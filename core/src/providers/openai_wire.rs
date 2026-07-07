@@ -294,11 +294,14 @@ impl ChatStreamAccumulator {
 
             if let Some(tool_calls) = &choice.delta.tool_calls {
                 for tool_call in tool_calls {
-                    let entry = self.tool_calls.entry(tool_call.index).or_insert(ToolCallAcc {
-                        id: String::new(),
-                        name: String::new(),
-                        arguments: String::new(),
-                    });
+                    let entry = self
+                        .tool_calls
+                        .entry(tool_call.index)
+                        .or_insert(ToolCallAcc {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        });
                     if let Some(tool_call_id) = &tool_call.id {
                         entry.id = tool_call_id.clone();
                     }
@@ -335,7 +338,8 @@ impl ChatStreamAccumulator {
             });
         }
 
-        let mut sorted_tool_calls: Vec<(usize, ToolCallAcc)> = self.tool_calls.into_iter().collect();
+        let mut sorted_tool_calls: Vec<(usize, ToolCallAcc)> =
+            self.tool_calls.into_iter().collect();
         sorted_tool_calls.sort_by_key(|(index, _)| *index);
 
         let message = Message::Assistant {

@@ -41,12 +41,7 @@ responses:
     )
     .await?;
 
-    run_prompt_with_timeout(
-        &page,
-        "what is 1 + 1?",
-        std::time::Duration::from_secs(60),
-    )
-    .await?;
+    run_prompt_with_timeout(&page, "what is 1 + 1?", std::time::Duration::from_secs(60)).await?;
 
     let blocks = get_timeline_blocks(&page).await?;
 

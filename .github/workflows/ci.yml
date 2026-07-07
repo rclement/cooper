@@ -112,19 +112,10 @@ jobs:
 
       - uses: jetli/wasm-pack-action@v0.4.0
 
-      - name: Build wasm package
-        run: wasm-pack build --target web
-        working-directory: web
-
-      - name: Build mock-server
-        run: cargo build -p cooper-mock-server
-
-      - id: setup-chrome
-        uses: browser-actions/setup-chrome@v2
+      - name: Build
+        run: cargo build
 
       - name: Run e2e tests
-        env:
-          CHROMIUM_EXECUTABLE: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: cargo test -p cooper-e2e -j 1
 
   build:

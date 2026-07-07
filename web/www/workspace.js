@@ -21,7 +21,7 @@ import {
   validEntryName,
   pathKey,
   gitClone,
-  GIT_CORS_PROXY,
+  resolveGitProxy,
 } from "./workspace-fs.js";
 
 const $ = (id) => document.getElementById(id);
@@ -396,12 +396,13 @@ async function fetchFromUrl() {
 }
 
 async function cloneRepo() {
+  const gitProxy = await resolveGitProxy();
   const wrapper = document.createElement("div");
   wrapper.innerHTML = `
     <p class="hint ws-modal-hint">
       Public repositories only. Runs entirely in the browser via
       <a href="https://isomorphic-git.org/" target="_blank" rel="noopener">isomorphic-git</a>,
-      routed through its official CORS proxy (${GIT_CORS_PROXY}) since GitHub/GitLab
+      routed through a CORS proxy (${gitProxy}) since GitHub/GitLab
       don't send CORS headers for git's smart HTTP protocol.
     </p>
     <label class="ws-modal-label">Repository URL</label>
