@@ -116,7 +116,7 @@ export const WORKSPACE_TOOLS = {
     schema: {
       name: "git_clone",
       description:
-        "Clone a public git repository into the workspace via HTTP (through isomorphic-git's public CORS proxy). Fails if the destination already exists.",
+        "Clone a public git repository into the workspace via HTTP (through a CORS proxy). Fails if the destination already exists.",
       parameters: {
         url: {
           type: "string",

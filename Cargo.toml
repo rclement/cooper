@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "dev-server", "e2e", "mock-server", "web"]
+members = ["core", "e2e", "mock-server", "web"]
 resolver = "2"
 
 [package]
@@ -7,15 +7,22 @@ name = "agent-cooper"
 version = "0.0.0"
 edition = "2024"
 
+[[bin]]
+name = "cooper"
+path = "src/main.rs"
+
 [dependencies]
 async-trait = "0.1.89"
+axum = "0.8.9"
 clap = { version = "4.6.1", features = ["derive"] }
 cooper-core = { path = "core" }
 dirs = "6.0.0"
+reqwest = { version = "0.13.4", features = ["stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9.34"
 tokio = { version = "1.52.3", features = ["full"] }
+tower-http = { version = "0.6.6", features = ["fs", "set-header"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

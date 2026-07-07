@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 axum = "0.8.9"
 chromiumoxide = "0.9.1"
+chromiumoxide_fetcher = "0.9.1"
 cooper-mock-server = { path = "../mock-server" }
 futures = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
