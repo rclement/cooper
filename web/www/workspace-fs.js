@@ -112,12 +112,88 @@ export async function calcDirSize(dirHandle) {
   return total;
 }
 
+// ---------- Writing files (Safari has no `createWritable()`) ----------
+//
+// Safari implements OPFS but never shipped the async `createWritable()`
+// stream API — only the synchronous `createSyncAccessHandle()`, which the
+// spec (and every implementation of it) restricts to Worker contexts. So on
+// the main thread, where `createWritable` is undefined, writes are handed
+// off to a small dedicated worker that opens the sync access handle instead;
+// FileSystemFileHandle is structured-cloneable, so the already-resolved
+// handle can just be posted over. Callers already running inside a Worker
+// (the agent worker, this write worker itself) use the sync handle directly
+// with no extra hop.
+
+export async function toUint8Array(data) {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  throw new Error("Unsupported data type for OPFS write");
+}
+
+const supportsCreateWritable =
+  typeof FileSystemFileHandle !== "undefined" && "createWritable" in FileSystemFileHandle.prototype;
+const isWorkerContext = typeof window === "undefined";
+
+async function writeSync(fileHandle, data) {
+  const accessHandle = await fileHandle.createSyncAccessHandle();
+  try {
+    const bytes = await toUint8Array(data);
+    accessHandle.truncate(0);
+    accessHandle.write(bytes, { at: 0 });
+    accessHandle.flush();
+  } finally {
+    accessHandle.close();
+  }
+}
+
+let writerWorker = null;
+let writerMsgId = 0;
+const writerPending = new Map();
+
+function getWriterWorker() {
+  if (!writerWorker) {
+    writerWorker = new Worker("opfs-writer-worker.js", { type: "module" });
+    writerWorker.onmessage = (e) => {
+      const { id, ok, error } = e.data;
+      const pending = writerPending.get(id);
+      if (!pending) return;
+      writerPending.delete(id);
+      if (ok) pending.resolve();
+      else pending.reject(new Error(error));
+    };
+  }
+  return writerWorker;
+}
+
+function writeViaWorker(fileHandle, data) {
+  return new Promise((resolve, reject) => {
+    const id = ++writerMsgId;
+    writerPending.set(id, { resolve, reject });
+    getWriterWorker().postMessage({ id, fileHandle, data });
+  });
+}
+
+/// Writes `data` (string, Blob, ArrayBuffer, or typed array) to `fileHandle`,
+/// replacing its contents. Use this instead of calling `createWritable()`
+/// directly — see the module-level comment above for why.
+export async function writeFile(fileHandle, data) {
+  if (supportsCreateWritable) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(data);
+    await writable.close();
+  } else if (isWorkerContext) {
+    await writeSync(fileHandle, data);
+  } else {
+    await writeViaWorker(fileHandle, data);
+  }
+}
+
 export async function copyFileInto(srcFileHandle, destDirHandle, destName) {
   const file = await srcFileHandle.getFile();
   const destFileHandle = await destDirHandle.getFileHandle(destName, { create: true });
-  const writable = await destFileHandle.createWritable();
-  await writable.write(await file.arrayBuffer());
-  await writable.close();
+  await writeFile(destFileHandle, await file.arrayBuffer());
 }
 
 export async function copyRecursive(srcHandle, destParentDirHandle, destName) {
@@ -173,9 +249,7 @@ export async function writeFileText(path, content) {
   const name = segments.pop();
   const dirHandle = await getDirHandle(segments, true); // mkdirp parents
   const fileHandle = await dirHandle.getFileHandle(name, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(content);
-  await writable.close();
+  await writeFile(fileHandle, content);
 }
 
 async function resolveDir(segments, create, originalPath) {
@@ -283,9 +357,7 @@ async function gitWriteFile(filepath, data) {
   const name = segments.pop();
   const dirHandle = await gitResolveDir(segments, true); // mkdirp parents defensively
   const fileHandle = await dirHandle.getFileHandle(name, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : data);
-  await writable.close();
+  await writeFile(fileHandle, data);
 }
 
 async function gitMkdir(dirpath) {
