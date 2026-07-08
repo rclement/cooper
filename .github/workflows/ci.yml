@@ -69,9 +69,9 @@ jobs:
             echo
             echo "| File | Lines | Functions | Regions |"
             echo "| --- | --- | --- | --- |"
-            jq -r '
+            jq -r --arg root "$GITHUB_WORKSPACE/" '
               .data[0].files[]
-              | "| \(.filename | sub(".*/src/"; "src/")) | \(.summary.lines.percent | round)% (\(.summary.lines.covered)/\(.summary.lines.count)) | \(.summary.functions.percent | round)% (\(.summary.functions.covered)/\(.summary.functions.count)) | \(.summary.regions.percent | round)% (\(.summary.regions.covered)/\(.summary.regions.count)) |"
+              | "| \(.filename | sub("^" + $root; "")) | \(.summary.lines.percent | round)% (\(.summary.lines.covered)/\(.summary.lines.count)) | \(.summary.functions.percent | round)% (\(.summary.functions.covered)/\(.summary.functions.count)) | \(.summary.regions.percent | round)% (\(.summary.regions.covered)/\(.summary.regions.count)) |"
             ' coverage.json
             total_lines=$(jq -r '.data[0].totals.lines.percent | round' coverage.json)
             total_functions=$(jq -r '.data[0].totals.functions.percent | round' coverage.json)
