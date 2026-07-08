@@ -22,6 +22,7 @@ import {
   pathKey,
   gitClone,
   resolveGitProxy,
+  writeFile,
 } from "./workspace-fs.js";
 
 const $ = (id) => document.getElementById(id);
@@ -307,9 +308,7 @@ async function createNewFile() {
     const fileHandle = await dirHandle.getFileHandle(name, { create: true });
     const existing = await fileHandle.getFile();
     if (existing.size === 0) {
-      const writable = await fileHandle.createWritable();
-      await writable.write("");
-      await writable.close();
+      await writeFile(fileHandle, "");
     }
     showToast(`Created "${name}".`, "success");
     await renderAll();
@@ -336,9 +335,7 @@ async function uploadFiles(fileList) {
     const dirHandle = await getDirHandle(currentPath, false);
     for (const file of fileList) {
       const fileHandle = await dirHandle.getFileHandle(file.name, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(await file.arrayBuffer());
-      await writable.close();
+      await writeFile(fileHandle, await file.arrayBuffer());
     }
     showToast(`Uploaded ${fileList.length} file(s).`, "success");
     await renderAll();
@@ -385,9 +382,7 @@ async function fetchFromUrl() {
       const blob = await response.blob();
       const dirHandle = await getDirHandle(currentPath, false);
       const fileHandle = await dirHandle.getFileHandle(name, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(blob);
-      await writable.close();
+      await writeFile(fileHandle, blob);
       showToast(`Saved "${name}" from URL.`, "success");
       closeModal();
       await renderAll();
@@ -534,9 +529,7 @@ async function openFileEditor(name, fileHandle) {
     saveBtn.textContent = "Save";
     saveBtn.addEventListener("click", async () => {
       await withErrorToast(async () => {
-        const writable = await fileHandle.createWritable();
-        await writable.write(textarea.value);
-        await writable.close();
+        await writeFile(fileHandle, textarea.value);
         showToast(`Saved "${name}".`, "success");
         closeModal();
         await renderAll();
