@@ -252,6 +252,21 @@ export async function writeFileText(path, content) {
   await writeFile(fileHandle, content);
 }
 
+/// Removes the file or directory at `path` (recursively), quietly ignoring
+/// a path that's already gone — used for cleanup (e.g. a session's repo
+/// clone), where "missing" is as good as "removed".
+export async function removePath(path) {
+  const segments = toSegments(path);
+  if (segments.length === 0) throw new Error("A path is required.");
+  const name = segments.pop();
+  try {
+    const parent = await getDirHandle(segments, false);
+    await parent.removeEntry(name, { recursive: true });
+  } catch (err) {
+    if (err.name !== "NotFoundError") throw err;
+  }
+}
+
 async function resolveDir(segments, create, originalPath) {
   try {
     return await getDirHandle(segments, create);
@@ -460,6 +475,17 @@ async function loadGit() {
   return { git, http };
 }
 
+// Credentials for private clones, keyed by git host ("github.com" → an
+// isomorphic-git `onAuth` credential object). This module runs in whichever
+// context imported it (main thread or agent Worker) and workers can't read
+// localStorage, so the tokens are pushed in — app.js includes them in every
+// run message and worker.js forwards them here.
+let gitAuthByHost = {};
+
+export function setGitAuth(authByHost) {
+  gitAuthByHost = authByHost ?? {};
+}
+
 /// Clones `url` into `destPath` (a workspace-relative POSIX path; must not
 /// already exist). `onProgress`, if given, is called with isomorphic-git's
 /// raw progress events (`{ phase, loaded, total? }`).
@@ -486,5 +512,8 @@ export async function gitClone({ url, destPath, branch, shallow = true, onProgre
     singleBranch: true,
     depth: shallow ? 1 : undefined,
     onProgress,
+    // Returning undefined keeps the clone anonymous (public repos work as
+    // before); a connected account's token makes its private repos reachable.
+    onAuth: (requestUrl) => gitAuthByHost[new URL(requestUrl).host],
   });
 }

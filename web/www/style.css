@@ -574,6 +574,117 @@ body {
   font-size: 0.8em;
 }
 
+.git-account-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.git-account-provider {
+  font-weight: 600;
+  min-width: 6em;
+}
+
+.git-account-avatar {
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+}
+
+.git-account-login {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--text-dim);
+}
+
+.git-account-row > button,
+.git-account-row > .hint {
+  margin-left: auto;
+}
+
+/* --- Attach-a-repo chip + picker (prompt area) --- */
+
+.repo-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.repo-attach-btn {
+  font-size: 0.85em;
+}
+
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 1em;
+  padding: 0.25em 0.5em 0.25em 0.8em;
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.repo-chip.is-missing {
+  border-color: #c66;
+}
+
+.repo-panel {
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  padding: 0.6em;
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.repo-filter {
+  width: 100%;
+}
+
+.repo-url-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.repo-url-row input {
+  flex: 1;
+}
+
+.repo-url-row button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.repo-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 14em;
+  overflow-y: auto;
+}
+
+.repo-item {
+  text-align: left;
+  background: transparent;
+  /* the global `button` rule's near-black text is for the accent
+     background — invisible on the dark panel */
+  color: var(--text);
+  border: none;
+  padding: 0.35em 0.5em;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 400;
+  border-radius: 0.3em;
+}
+
+.repo-item:hover {
+  background: var(--bg);
+}
+
 .icon-btn {
   background: transparent;
   border: none;

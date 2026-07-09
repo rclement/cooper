@@ -34,6 +34,42 @@ COOP/COEP for cross-origin isolation (multi-threaded wllama inference via
 builds, and a same-origin git CORS proxy at `/git-proxy` so workspace cloning
 doesn't depend on cors.isomorphic-git.org.
 
+### Private repositories (git OAuth)
+
+`git_clone` handles public repos out of the box. To reach private ones, users
+connect a git provider account in Settings → Connected accounts. That flow
+needs OAuth client credentials on the server, passed as env vars
+(`{PROVIDER}_CLIENT_ID` / `{PROVIDER}_CLIENT_SECRET`):
+
+```bash
+GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... cargo run -- web
+```
+
+A `.env` file in the working directory is also loaded if present
+(git-ignored; real env vars take precedence).
+
+Register the app on the provider side (GitHub: an OAuth App for all-repos
+access via the `repo` scope, or a GitHub App if users should pick which
+repositories to grant at install time) with the authorization callback URL
+pointing at `http://127.0.0.1:8080/www/oauth-callback.html` (adjust
+host/port to match).
+
+The server only performs the code-for-token exchange (`/oauth/*` routes in
+[src/web.rs](src/web.rs)); access tokens are stored in the user's browser
+(localStorage), never server-side. Currently supported: GitHub.
+
+### Attaching a repo to a session
+
+Next to the prompt box, "Attach Git repository" lets the user pick one of their
+repositories (connecting the provider account inline if needed — the repo
+list is fetched client-side from the provider API). The default branch is
+shallow-cloned into a per-attachment workspace folder, and the session is
+scoped to it: all workspace tools resolve paths inside the clone, the system
+prompt carries it as the current working directory, and the repo's
+`AGENTS.md` (if present) is injected as agent instructions. The attachment
+is recorded in session metadata, so resuming a session re-attaches its repo;
+deleting the session deletes the clone.
+
 The wasm package (`web/pkg/`) is built automatically by [build.rs](build.rs)
 whenever `web/` or `core/` sources change, as part of `cargo build`/`cargo run` on the CLI — install [`wasm-pack`](https://rustwasm.github.io/wasm-pack/)
 and it's picked up with no extra step:

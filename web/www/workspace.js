@@ -22,8 +22,10 @@ import {
   pathKey,
   gitClone,
   resolveGitProxy,
+  setGitAuth,
   writeFile,
 } from "./workspace-fs.js";
+import { getGitAuth } from "./git-accounts.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -392,10 +394,14 @@ async function fetchFromUrl() {
 
 async function cloneRepo() {
   const gitProxy = await resolveGitProxy();
+  // Main-thread copy of the credentials (the agent worker gets its own with
+  // each run message) — lets this modal clone private repos too.
+  setGitAuth(getGitAuth());
   const wrapper = document.createElement("div");
   wrapper.innerHTML = `
     <p class="hint ws-modal-hint">
-      Public repositories only. Runs entirely in the browser via
+      Public repositories — plus private ones from accounts connected in
+      Settings. Runs entirely in the browser via
       <a href="https://isomorphic-git.org/" target="_blank" rel="noopener">isomorphic-git</a>,
       routed through a CORS proxy (${gitProxy}) since GitHub/GitLab
       don't send CORS headers for git's smart HTTP protocol.

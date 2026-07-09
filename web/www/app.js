@@ -1,6 +1,16 @@
 // Main-thread UI glue: wires the form to the agent Worker and renders the
 // events it streams back. No framework, no build step.
 import { initSettings, getCurrentConfig } from "./settings.js";
+import { initGitAccounts, getGitAuth } from "./git-accounts.js";
+import {
+  initRepoAttach,
+  getRepoAttachment,
+  restoreAttachedRepo,
+  markAttachedRepoUsed,
+  clearUsedAttachment,
+  readAttachedAgentsMd,
+} from "./repo-attach.js";
+import { removePath } from "./workspace-fs.js";
 import { initContext, getContextConfig, getEnabledToolNames } from "./context.js";
 import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
@@ -24,6 +34,27 @@ function createWorker() {
 const $ = (id) => document.getElementById(id);
 
 initSettings();
+initGitAccounts();
+// The repo binding can't change under a live conversation — the system
+// prompt built on the first turn refers to it. Attaching/detaching with a
+// session active ends that session (it stays saved) after a confirm.
+initRepoAttach({
+  onBindingChange: () => {
+    if (!currentSession) return true;
+    if (
+      !confirm(
+        "Changing the attached repo starts a new session (the current one stays saved). Continue?",
+      )
+    ) {
+      return false;
+    }
+    currentSession = null;
+    clearTimeline();
+    $("status").textContent = "";
+    renderSessionList();
+    return true;
+  },
+});
 initContext();
 initWorkspace();
 initAnalytics();
@@ -397,6 +428,10 @@ function startNewSession() {
   currentSession = null;
   clearTimeline();
   $("status").textContent = "";
+  // A repo the old session ran with stays that session's (its clone dir is
+  // tied to it — sharing across sessions would make cleanup ambiguous); one
+  // attached but never run with carries into the session about to start.
+  clearUsedAttachment();
   showSessionsView();
   renderSessionList();
 }
@@ -487,7 +522,7 @@ $("stop").addEventListener("click", () => {
   setRunning(false);
 });
 
-$("run").addEventListener("click", () => {
+$("run").addEventListener("click", async () => {
   const prompt = $("prompt").value.trim();
   if (!prompt) return;
 
@@ -496,12 +531,27 @@ $("run").addEventListener("click", () => {
     $("status").textContent = "error: configure a provider and model first";
     return;
   }
+  const repo = getRepoAttachment();
+  if (repo && repo.status !== "ready") {
+    $("status").textContent =
+      repo.status === "cloning"
+        ? "attached repo is still cloning — wait for it to finish"
+        : "attached repo's clone is missing — re-clone it or detach";
+    return;
+  }
   const contextConfig = getContextConfig();
+  // The repo's AGENTS.md feeds the core's dedicated agent-instructions
+  // slot, appended to whatever the user wrote in the context panel. Read
+  // fresh each run so in-repo edits are picked up.
+  const repoAgentsMd = repo ? await readAttachedAgentsMd() : null;
   const config = {
     ...providerConfig,
     system_prompt_template: contextConfig.systemPromptTemplate,
-    agent_instructions: contextConfig.agentInstructions,
+    agent_instructions: [contextConfig.agentInstructions, repoAgentsMd]
+      .filter(Boolean)
+      .join("\n\n"),
     context_files: contextConfig.contextFiles,
+    working_dir: repo?.dir,
   };
   const enabledTools = getEnabledToolNames();
   const newSession = !currentSession;
@@ -519,8 +569,15 @@ $("run").addEventListener("click", () => {
       // Local models: the select's option value is the catalog id, not the
       // display name stored in `model` — needed to re-select on restore.
       modelId: providerConfig.modelId ?? providerConfig.model,
+      // From here the clone belongs to this session: it's what makes the
+      // session's working dir resumable, so detaching must not delete it —
+      // it's cleaned up when the session is.
+      repo: repo
+        ? { provider: repo.provider, fullName: repo.fullName, branch: repo.branch, dir: repo.dir, url: repo.url }
+        : null,
       history: null,
     };
+    markAttachedRepoUsed();
   }
 
   appendPrompt(prompt);
@@ -534,6 +591,8 @@ $("run").addEventListener("click", () => {
     config,
     enabledTools,
     restoreHistory: newSession ? null : currentSession.history,
+    gitAuth: getGitAuth(),
+    workingDir: repo?.dir,
   });
 });
 
@@ -586,6 +645,9 @@ function loadSession(session) {
   showSessionsView();
   clearTimeline();
   if (session.history) renderHistory(session.history);
+  // Re-attach the session's repo (async: verifies the clone still exists in
+  // OPFS; the chip offers a re-clone if the workspace was wiped).
+  restoreAttachedRepo(session.repo ?? null);
 
   // Point the config UI at the provider/model this session used, so
   // continuing the conversation reuses the same connection. If that
@@ -647,6 +709,16 @@ async function renderSessionList() {
       event.stopPropagation();
       if (!confirm(`Delete session "${session.title}"?`)) return;
       await deleteSession(session.id);
+      // The session's repo clone goes with it — unless another session
+      // still points at the same dir (possible via export/import quirks;
+      // cheap to check, bad to get wrong).
+      if (session.repo?.dir) {
+        const remaining = await listSessions();
+        if (!remaining.some((s) => s.repo?.dir === session.repo.dir)) {
+          await removePath(session.repo.dir).catch(() => {});
+          refreshWorkspace();
+        }
+      }
       if (currentSession?.id === session.id) startNewSession();
       else renderSessionList();
     });

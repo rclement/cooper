@@ -1,5 +1,6 @@
 // Runs the wasm agent core off the main thread. Receives
-// { prompt, config, enabledTools, restoreHistory } messages and posts back
+// { prompt, config, enabledTools, restoreHistory, gitAuth, workingDir }
+// messages and posts back
 // { type: 'event' | 'done' | 'error', ... } messages as the agentic loop
 // streams.
 //
@@ -19,6 +20,8 @@
 // { type: 'model_status', status: 'loading' | 'ready' } messages.
 import init, { WasmAgent } from "../pkg/cooper_web.js";
 import { ALL_TOOLS } from "./tools.js";
+import { setGitAuth } from "./workspace-fs.js";
+import { setWorkingDir } from "./workspace-tools.js";
 import { Wllama } from "./vendor/wllama/index.js";
 
 // wllama's bundle resolves relative asset paths against `document.baseURI`,
@@ -130,7 +133,13 @@ self.onmessage = async (message) => {
     return;
   }
 
-  const { prompt, config, enabledTools, restoreHistory } = message.data;
+  const { prompt, config, enabledTools, restoreHistory, gitAuth, workingDir } = message.data;
+
+  // Refreshed every run, like the config: connecting/disconnecting an
+  // account (or the attached repo) between turns must take effect on the
+  // next tool call.
+  setGitAuth(gitAuth);
+  setWorkingDir(workingDir);
 
   try {
     await ready;
