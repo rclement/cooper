@@ -123,10 +123,19 @@ body {
   max-width: 88rem;
 }
 
+/* Chat-style layout: the sessions view owns the viewport height; the
+   timeline is the scrolling middle and the composer is anchored below it.
+   The page body doesn't scroll here — trim .content's bottom padding so the
+   composer actually sits at the bottom edge. */
+.content:has(#view-sessions.is-active) {
+  padding-bottom: 1.5rem;
+}
+
 .session-layout {
   display: flex;
   align-items: flex-start;
   gap: 2rem;
+  height: calc(100vh - 4rem); /* .content padding: 2.5rem top + 1.5rem bottom */
 }
 
 .session-main {
@@ -134,7 +143,8 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2rem;
+  gap: 1rem;
+  height: 100%;
 }
 
 .sidebar-sessions {
@@ -516,7 +526,6 @@ body {
 }
 
 .model-indicator {
-  margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -630,39 +639,90 @@ body {
   margin-left: auto;
 }
 
-/* --- Attach-a-repo chip + picker (prompt area) --- */
+/* --- Attach-a-repo pill + picker (Run row, next to the model pill) --- */
+
+#repo-attach {
+  margin-left: auto; /* pushes itself + the model pill to the right edge */
+  position: relative; /* anchors the picker popover */
+  min-width: 0;
+}
 
 .repo-attach-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
 }
 
+/* Dashed pill while nothing is attached — an "empty slot" affordance.
+   min-width/overflow let it truncate under pressure instead of painting
+   over the model pill. */
 .repo-attach-btn {
-  font-size: 0.85em;
+  background: transparent;
+  border: 1px dashed var(--text-dim);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.8em;
+  font-weight: 400;
+  padding: 0.3em 0.8em;
+  border-radius: 1em;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+.repo-attach-btn:hover {
+  color: var(--text);
+  border-color: var(--text);
+  opacity: 1;
+}
+
+/* Attached: a solid pill, same family as the model pill. min-width: 0 down
+   the chain lets a long "owner/repo (branch)" shrink to an ellipsis instead
+   of overflowing into the model pill. */
 .repo-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.5em;
-  background: var(--bg);
+  min-width: 0;
+  max-width: 100%;
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 1em;
   padding: 0.25em 0.5em 0.25em 0.8em;
   font-family: var(--mono);
-  font-size: 0.85em;
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.repo-chip .repo-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.repo-chip button {
+  flex-shrink: 0;
 }
 
 .repo-chip.is-missing {
   border-color: #c66;
 }
 
+/* The picker opens upward from the pill (the composer sits at the bottom
+   of the viewport). */
 .repo-panel {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  right: 0;
+  width: min(28rem, 85vw);
+  z-index: 20;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 0.5em;
   padding: 0.6em;
-  margin-top: 0.4rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -908,6 +968,17 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.25rem; /* breathing room between blocks and scrollbar */
+}
+
+/* Without this, overflowing content shrinks the blocks (flex-shrink
+   default + the blocks' overflow:hidden) instead of scrolling the
+   timeline. */
+.timeline > * {
+  flex-shrink: 0;
 }
 
 .block {
@@ -1909,8 +1980,20 @@ details:not([open]) > .block-body {
 }
 
 @media (max-width: 60rem) {
+  /* Narrow screens go back to a flowing page: a fixed-height chat column
+     with the panel stacked below it would bury the panel off-screen. */
   .session-layout {
     flex-direction: column;
+    height: auto;
+  }
+
+  .session-main {
+    height: auto;
+  }
+
+  .timeline {
+    overflow-y: visible;
+    min-height: unset;
   }
 
   .context-panel {

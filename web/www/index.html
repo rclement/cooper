@@ -44,18 +44,9 @@
         <section id="view-sessions" class="view is-active">
           <div class="session-layout">
             <div class="session-main">
-              <p class="hint">
-                Runs entirely client-side, in a Web Worker running a wasm
-                build of the same agent core as the CLI. No server-side proxy
-                — your API key and prompts never leave the browser. With the
-                Local (in-browser) provider, even the model runs in the
-                browser via wllama/WebGPU — no network calls after the model
-                download.
-              </p>
+              <div id="timeline" class="timeline"></div>
 
               <section class="prompt-area">
-                <div id="repo-attach"></div>
-
                 <label for="prompt">Prompt</label>
                 <textarea id="prompt" rows="3"></textarea>
                 <div class="row">
@@ -64,6 +55,7 @@
                     Stop
                   </button>
                   <span id="status" class="status"></span>
+                  <div id="repo-attach"></div>
                   <button
                     id="model-indicator"
                     type="button"
@@ -72,8 +64,6 @@
                   ></button>
                 </div>
               </section>
-
-              <div id="timeline" class="timeline"></div>
             </div>
 
             <button
