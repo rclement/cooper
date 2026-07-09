@@ -25,7 +25,19 @@ async function ensureState() {
         indexURL: PYODIDE_INDEX_URL,
         packageBaseUrl: PYODIDE_PACKAGE_BASE_URL,
       });
-      const nativeFs = await pyodide.mountNativeFS("/workspace", await getRoot());
+      // Mounted at /mnt/opfs rather than something like /workspace: a name
+      // that reads as a plausible directory an agent might invent by habit
+      // (e.g. "save output to workspace/") collides with the mount itself,
+      // silently nesting a real "workspace" folder inside OPFS root instead
+      // of writing where intended.
+      const nativeFs = await pyodide.mountNativeFS("/mnt/opfs", await getRoot());
+      // Pyodide's cwd otherwise defaults to "/", a throwaway in-memory root
+      // unrelated to OPFS — a bare relative path like `to_csv("out.csv")`
+      // would silently "succeed" there and then vanish, invisible to every
+      // other tool. Chdir'ing into the mount makes relative paths resolve
+      // into the workspace by default, matching every other tool's
+      // workspace-relative convention.
+      pyodide.FS.chdir("/mnt/opfs");
       // micropip itself ships as a Pyodide package, not a stdlib module —
       // without this, `import micropip` fails with ModuleNotFoundError on
       // the very first call, before the agent even gets to `.install(...)`.
@@ -41,7 +53,7 @@ export const PYTHON_TOOLS = {
     schema: {
       name: "run_python",
       description:
-        "Run Python code in an in-browser interpreter (Pyodide). The workspace filesystem is mounted at /workspace, so file I/O there (e.g. open('/workspace/data.csv')) reads/writes the exact files visible in the Workspace view. Returns captured stdout/stderr plus the string form of the last expression's value, if any. Variables and imports persist between calls in the same session. Packages bundled with Pyodide (numpy, pandas, and most other common scientific-Python packages) load automatically the first time they're imported. For anything else, `import micropip` then `await micropip.install(\"package-name\")` installs a pure-Python wheel from PyPI.",
+        "Run Python code in an in-browser interpreter (Pyodide). The working directory is the workspace root, so plain relative paths (e.g. open('data.csv'), df.to_csv('out.csv')) read/write the exact files visible in the Workspace view. Returns captured stdout/stderr plus the string form of the last expression's value, if any. Variables and imports persist between calls in the same session. Packages bundled with Pyodide (numpy, pandas, and most other common scientific-Python packages) load automatically the first time they're imported. For anything else, `import micropip` then `await micropip.install(\"package-name\")` installs a pure-Python wheel from PyPI.",
       parameters: {
         code: {
           type: "string",
