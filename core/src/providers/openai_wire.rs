@@ -1,11 +1,7 @@
-//! OpenAI chat.completions wire types and stream accumulation, shared by
-//! every transport that speaks this shape: the HTTP/SSE provider in
-//! `openai_completions`, and the browser-side wllama bridge (which produces
-//! the same chunk objects in-process, no HTTP involved).
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use web_time::Instant;
 
 use crate::agent::{AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall, Usage};
 use crate::tools::{ToolParameterTypeSchema, ToolSchema};
@@ -57,6 +53,7 @@ impl From<&Message> for ApiMessage {
                 text,
                 reasoning,
                 tool_calls,
+                ..
             } => ApiMessage {
                 role: "assistant".to_string(),
                 content: text.clone(),
@@ -81,7 +78,9 @@ impl From<&Message> for ApiMessage {
                 },
                 tool_call_id: None,
             },
-            Message::Tool { call_id, result } => ApiMessage {
+            Message::Tool {
+                call_id, result, ..
+            } => ApiMessage {
                 role: "tool".to_string(),
                 content: Some(result.clone().unwrap_or_else(|e| format!("Error: {e}"))),
                 reasoning: None,
@@ -197,14 +196,10 @@ struct ApiStreamToolCallDelta {
     index: usize,
     #[serde(default)]
     id: Option<String>,
-    /// Optional because some producers (e.g. wllama) send the first delta of
-    /// a tool call with only `id`/`type` set.
     #[serde(default)]
     function: Option<ApiStreamToolCallFunction>,
 }
 
-/// Unknown wire fields (`role`, `id`, choice `index`, ...) are ignored by
-/// serde rather than modeled here; only what accumulation reads is kept.
 #[derive(Deserialize)]
 struct ApiStreamDelta {
     #[serde(default)]
@@ -238,10 +233,12 @@ struct ToolCallAcc {
     arguments: String,
 }
 
-/// Folds a sequence of `chat.completion.chunk` deltas into the final
-/// assistant `Message`, emitting streaming events on the way. Transports
-/// (SSE, wllama bridge, ...) parse their framing into `ApiStreamChunk`s and
-/// feed them here, so the delta semantics live in exactly one place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamPhase {
+    Reasoning,
+    Response,
+}
+
 #[derive(Default)]
 pub struct ChatStreamAccumulator {
     text_buf: String,
@@ -249,11 +246,34 @@ pub struct ChatStreamAccumulator {
     usage: Option<ApiUsage>,
     tool_calls: HashMap<usize, ToolCallAcc>,
     finish_reason: Option<String>,
+    current_phase: Option<(StreamPhase, Instant)>,
+    reasoning_ms: Option<u64>,
+    response_ms: Option<u64>,
 }
 
 impl ChatStreamAccumulator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn enter_phase(&mut self, phase: StreamPhase) {
+        match self.current_phase {
+            Some((current, _)) if current == phase => {} // already in it
+            _ => {
+                self.close_current_phase();
+                self.current_phase = Some((phase, Instant::now()));
+            }
+        }
+    }
+
+    fn close_current_phase(&mut self) {
+        if let Some((phase, started_at)) = self.current_phase.take() {
+            let elapsed_ms = started_at.elapsed().as_millis() as u64;
+            match phase {
+                StreamPhase::Reasoning => self.reasoning_ms = Some(elapsed_ms),
+                StreamPhase::Response => self.response_ms = Some(elapsed_ms),
+            }
+        }
     }
 
     pub fn push(&mut self, chunk: &ApiStreamChunk, handler: &dyn AgentEventsHandler) {
@@ -270,6 +290,7 @@ impl ChatStreamAccumulator {
                 && !content.is_empty()
                 && (!self.text_buf.is_empty() || !content.trim().is_empty())
             {
+                self.enter_phase(StreamPhase::Response);
                 self.text_buf.push_str(content);
                 handler.on_chunk(&AgentMessageChunk {
                     text: Some(content.clone()),
@@ -285,6 +306,7 @@ impl ChatStreamAccumulator {
             if let Some(reasoning) = thinking
                 && !reasoning.is_empty()
             {
+                self.enter_phase(StreamPhase::Reasoning);
                 self.reasoning_buf.push_str(reasoning);
                 handler.on_chunk(&AgentMessageChunk {
                     text: None,
@@ -326,17 +348,8 @@ impl ChatStreamAccumulator {
         }
     }
 
-    pub fn finish(
-        self,
-        handler: &dyn AgentEventsHandler,
-    ) -> Result<(Message, FinishReason), Box<dyn std::error::Error>> {
-        if let Some(u) = &self.usage {
-            handler.on_complete(&Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-            });
-        }
+    pub fn finish(mut self) -> Result<(Message, FinishReason), Box<dyn std::error::Error>> {
+        self.close_current_phase();
 
         let mut sorted_tool_calls: Vec<(usize, ToolCallAcc)> =
             self.tool_calls.into_iter().collect();
@@ -367,6 +380,14 @@ impl ChatStreamAccumulator {
                     },
                 )
                 .collect::<Result<Vec<_>, _>>()?,
+            reasoning_duration_ms: self.reasoning_ms,
+            response_duration_ms: self.response_ms,
+            usage: self.usage.map(|u| Usage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+            }),
+            at_ms: None,
         };
 
         let finish_reason = match self.finish_reason.as_deref() {
@@ -427,11 +448,11 @@ mod tests {
 
     #[test]
     fn api_message_from_assistant_without_tool_calls() {
-        let message = Message::Assistant {
-            text: Some("answer".to_string()),
-            reasoning: Some("thinking".to_string()),
-            tool_calls: vec![],
-        };
+        let message = Message::assistant(
+            Some("answer".to_string()),
+            Some("thinking".to_string()),
+            vec![],
+        );
         let api_message = ApiMessage::from(&message);
         let value = serde_json::to_value(&api_message).unwrap();
 
@@ -443,15 +464,15 @@ mod tests {
 
     #[test]
     fn api_message_from_assistant_with_tool_calls() {
-        let message = Message::Assistant {
-            text: None,
-            reasoning: None,
-            tool_calls: vec![ToolCall {
+        let message = Message::assistant(
+            None,
+            None,
+            vec![ToolCall {
                 id: "call-1".to_string(),
                 name: "echo".to_string(),
                 arguments: HashMap::from([("msg".to_string(), "hi".to_string())]),
             }],
-        };
+        );
         let api_message = ApiMessage::from(&message);
         let value = serde_json::to_value(&api_message).unwrap();
 
@@ -471,6 +492,8 @@ mod tests {
         let message = Message::Tool {
             call_id: "call-1".to_string(),
             result: Ok("output".to_string()),
+            duration_ms: None,
+            at_ms: None,
         };
         let api_message = ApiMessage::from(&message);
         let value = serde_json::to_value(&api_message).unwrap();
@@ -486,6 +509,8 @@ mod tests {
         let message = Message::Tool {
             call_id: "call-1".to_string(),
             result: Err("boom".to_string()),
+            duration_ms: None,
+            at_ms: None,
         };
         let api_message = ApiMessage::from(&message);
         let value = serde_json::to_value(&api_message).unwrap();
@@ -536,6 +561,73 @@ mod tests {
             value["function"]["parameters"]["required"],
             serde_json::json!(["city"])
         );
+    }
+
+    /// Accumulation tests drive `push` directly, the way a transport does;
+    /// the handler is irrelevant to what's being asserted.
+    struct NullHandler;
+
+    impl AgentEventsHandler for NullHandler {
+        fn on_chunk(&self, _chunk: &AgentMessageChunk) {}
+    }
+
+    fn reasoning_delta(text: &str) -> ApiStreamChunk {
+        serde_json::from_str(&format!(
+            r#"{{"choices":[{{"delta":{{"reasoning":"{text}"}}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn content_delta(text: &str) -> ApiStreamChunk {
+        serde_json::from_str(&format!(
+            r#"{{"choices":[{{"delta":{{"content":"{text}"}}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn accumulated_message_records_how_long_reasoning_and_response_took() {
+        // Feed deltas the way a reasoning model streams them: think for a
+        // while, then write the answer. Each phase gets its own duration.
+        let mut acc = ChatStreamAccumulator::new();
+
+        acc.push(&reasoning_delta("thinking"), &NullHandler);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        acc.push(&content_delta("the answer"), &NullHandler);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let (message, _) = acc.finish().unwrap();
+        match message {
+            Message::Assistant {
+                reasoning_duration_ms,
+                response_duration_ms,
+                ..
+            } => {
+                assert!(reasoning_duration_ms.expect("reasoning should be timed") >= 10);
+                assert!(response_duration_ms.expect("response should be timed") >= 10);
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn accumulated_message_without_reasoning_gets_no_reasoning_duration() {
+        let mut acc = ChatStreamAccumulator::new();
+
+        acc.push(&content_delta("plain answer"), &NullHandler);
+
+        let (message, _) = acc.finish().unwrap();
+        match message {
+            Message::Assistant {
+                reasoning_duration_ms,
+                response_duration_ms,
+                ..
+            } => {
+                assert_eq!(reasoning_duration_ms, None);
+                assert!(response_duration_ms.is_some());
+            }
+            _ => panic!("expected assistant message"),
+        }
     }
 
     /// The wllama bridge feeds chunks that may omit `id`/`usage` and carry

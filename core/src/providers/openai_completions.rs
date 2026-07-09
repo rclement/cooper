@@ -32,8 +32,6 @@ impl OpenAICompletionsAPI {
     }
 }
 
-/// Splits the SSE framing into `data:` payloads and feeds each parsed chunk
-/// into the accumulator; returns it once the `[DONE]` marker arrives.
 async fn process_stream(
     response: reqwest::Response,
     handler: &dyn AgentEventsHandler,
@@ -103,25 +101,25 @@ impl Provider for OpenAICompletionsAPI {
             .error_for_status()?;
 
         let acc = process_stream(response, handler).await?;
-        acc.finish(handler)
+        acc.finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentMessageChunk, Usage};
+    use crate::agent::AgentMessageChunk;
     use std::collections::HashMap;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Records callbacks from `complete_stream` so tests can assert on
-    /// streamed chunks and completion usage without touching stdout.
+    /// Records streamed chunks from `complete_stream` so tests can assert
+    /// on them without touching stdout. Usage isn't a callback anymore — it
+    /// arrives embedded on the returned assistant message.
     #[derive(Default)]
     struct SpyHandler {
         text_chunks: std::sync::Mutex<Vec<String>>,
         reasoning_chunks: std::sync::Mutex<Vec<String>>,
-        usages: std::sync::Mutex<Vec<(u64, u64, u64)>>,
     }
 
     impl AgentEventsHandler for SpyHandler {
@@ -132,14 +130,6 @@ mod tests {
             if let Some(r) = &chunk.reasoning {
                 self.reasoning_chunks.lock().unwrap().push(r.clone());
             }
-        }
-
-        fn on_complete(&self, usage: &Usage) {
-            self.usages.lock().unwrap().push((
-                usage.prompt_tokens,
-                usage.completion_tokens,
-                usage.total_tokens,
-            ));
         }
     }
 
@@ -187,10 +177,16 @@ mod tests {
                 text,
                 reasoning,
                 tool_calls,
+                usage,
+                ..
             } => {
                 assert_eq!(text.as_deref(), Some("Hello"));
                 assert_eq!(reasoning, None);
                 assert!(tool_calls.is_empty());
+                let usage = usage.expect("usage should be embedded on the message");
+                assert_eq!(usage.prompt_tokens, 10);
+                assert_eq!(usage.completion_tokens, 5);
+                assert_eq!(usage.total_tokens, 15);
             }
             _ => panic!("expected assistant message"),
         }
@@ -199,7 +195,6 @@ mod tests {
             *handler.text_chunks.lock().unwrap(),
             vec!["Hello".to_string()]
         );
-        assert_eq!(*handler.usages.lock().unwrap(), vec![(10, 5, 15)]);
     }
 
     #[tokio::test]

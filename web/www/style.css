@@ -757,6 +757,13 @@ details[open] > summary.block-header::before {
   min-width: 0;
 }
 
+.block-duration {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.75em;
+  flex-shrink: 0;
+}
+
 .block-body {
   padding: 0 0.85em 0.75em;
   font-family: var(--mono);
