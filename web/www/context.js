@@ -75,9 +75,28 @@ function closeAllTooltips() {
   }
 }
 
+function allToolsEnabled() {
+  return Object.keys(ALL_TOOLS).every((name) => context.enabledTools[name]);
+}
+
+// The toggle's label always names the action it would perform, so it reads
+// "select none" while everything is checked and "select all" otherwise.
+function updateToolsSelectToggle() {
+  $("tools-select-toggle").textContent = allToolsEnabled() ? "select none" : "select all";
+}
+
+function setAllTools(enabled) {
+  for (const name of Object.keys(ALL_TOOLS)) {
+    context.enabledTools[name] = enabled;
+  }
+  persist();
+  renderToolList();
+}
+
 function renderToolList() {
   const container = $("tool-list");
   container.innerHTML = "";
+  updateToolsSelectToggle();
 
   for (const [name, tool] of Object.entries(ALL_TOOLS)) {
     const row = document.createElement("label");
@@ -89,6 +108,7 @@ function renderToolList() {
     checkbox.addEventListener("change", () => {
       context.enabledTools[name] = checkbox.checked;
       persist();
+      updateToolsSelectToggle();
     });
 
     const label = document.createElement("span");
@@ -235,6 +255,7 @@ export function initContext() {
   $("system-prompt-template").value = context.systemPromptTemplate;
   $("agent-instructions").value = context.agentInstructions;
   renderToolList();
+  $("tools-select-toggle").addEventListener("click", () => setAllTools(!allToolsEnabled()));
   document.addEventListener("click", closeAllTooltips);
   renderFileList();
 

@@ -1,14 +1,13 @@
 // Runs the wasm agent core off the main thread. Receives
-// { prompt, config, enabledTools, newSession, restoreHistory } messages and
-// posts back { type: 'event' | 'done' | 'error', ... } messages as the
-// agentic loop streams.
+// { prompt, config, enabledTools, restoreHistory } messages and posts back
+// { type: 'event' | 'done' | 'error', ... } messages as the agentic loop
+// streams.
 //
-// `agent` is kept alive across messages (instead of created fresh each
-// time) so a run with `newSession: false` continues the same conversation
-// — the wasm-side WasmAgent carries its own message history internally.
-// `restoreHistory` (a JSON string previously produced by
-// `agent.export_history()`) seeds that history when resuming a session
-// persisted from a *previous* page load, where no in-memory agent exists.
+// A fresh WasmAgent is built for every run; continuing a session works by
+// seeding it with `restoreHistory` (a JSON string previously produced by
+// `agent.export_history()`, persisted by the main thread after each turn).
+// `agent` is still module-level only so the error path can export whatever
+// history the failed run produced.
 //
 // When `config.provider_type === "local"`, inference also happens right
 // here: wllama (llama.cpp compiled to wasm, including llama-server's
@@ -131,7 +130,7 @@ self.onmessage = async (message) => {
     return;
   }
 
-  const { prompt, config, enabledTools, newSession, restoreHistory } = message.data;
+  const { prompt, config, enabledTools, restoreHistory } = message.data;
 
   try {
     await ready;
@@ -141,24 +140,28 @@ self.onmessage = async (message) => {
       await ensureLocalModel(config.model_url);
     }
 
-    if (newSession || !agent) {
-      // Cleared up front (not just reassigned below) so that if
-      // construction throws, the catch block below doesn't attribute the
-      // failure to — and export history from — the *previous* session's
-      // agent instead of this one.
-      agent = null;
-      agent = new WasmAgent(JSON.stringify(config));
-      if (config.provider_type === "local") {
-        agent.set_completion_bridge(localCompletion);
-      }
-      for (const name of enabledTools ?? []) {
-        const tool = ALL_TOOLS[name];
-        if (!tool) continue;
-        agent.register_tool(JSON.stringify(tool.schema), tool.execute);
-      }
-      if (restoreHistory) {
-        agent.import_history(restoreHistory);
-      }
+    // Rebuilt on every run, not kept across messages: the enabled tools,
+    // the provider config, and even which session is active can all change
+    // between turns, and a long-lived agent would silently keep the old
+    // ones. The conversation itself isn't lost by this — the main thread
+    // persists the history after every turn and sends it back as
+    // `restoreHistory` whenever the run continues a session.
+    //
+    // Cleared up front (not just reassigned below) so that if construction
+    // throws, the catch block below doesn't attribute the failure to — and
+    // export history from — the *previous* run's agent instead of this one.
+    agent = null;
+    agent = new WasmAgent(JSON.stringify(config));
+    if (config.provider_type === "local") {
+      agent.set_completion_bridge(localCompletion);
+    }
+    for (const name of enabledTools ?? []) {
+      const tool = ALL_TOOLS[name];
+      if (!tool) continue;
+      agent.register_tool(JSON.stringify(tool.schema), tool.execute);
+    }
+    if (restoreHistory) {
+      agent.import_history(restoreHistory);
     }
 
     const resultJson = await agent.run_prompt(prompt, (eventJson) => {

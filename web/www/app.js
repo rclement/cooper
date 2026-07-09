@@ -533,7 +533,6 @@ $("run").addEventListener("click", () => {
     prompt,
     config,
     enabledTools,
-    newSession,
     restoreHistory: newSession ? null : currentSession.history,
   });
 });
