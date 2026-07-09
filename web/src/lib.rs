@@ -388,9 +388,7 @@ enum EventDto {
     /// A finalized message, in the exact same JSON shape as one entry of the
     /// exported history — timings, usage and timestamp included — so the UI
     /// renders live events and replayed history through one code path.
-    Message {
-        message: Message,
-    },
+    Message { message: Message },
 }
 
 #[derive(Serialize)]

@@ -720,7 +720,9 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_stream_propagates_provider_error() {
-        let provider = MockProvider::new(vec![Box::new(|_handler| Err("connection refused".to_string()))]);
+        let provider = MockProvider::new(vec![Box::new(|_handler| {
+            Err("connection refused".to_string())
+        })]);
         let handler = SpyHandler::default();
 
         let result = agent_loop_stream(
