@@ -1,9 +1,34 @@
 // Agent tool that runs SQL over an in-browser analytical database
-// (DuckDB-wasm), loaded lazily from its CDN build the same way python-tool.js
-// loads Pyodide — no bundler, no server round-trip. DuckDB-wasm ships its own
-// worker bundle, so instantiating it here spawns a nested Worker inside the
-// agent's own Worker (see worker.js); this is a standard, well-supported use
-// of the Worker API, not something specific to this app.
+// (DuckDB-wasm), vendored under vendor/duckdb-wasm/ — see vendor/README.md.
+// The npm build's ESM entrypoint imports the "apache-arrow" package as a
+// bare specifier (it's a real dependency, not inlined), so the vendored copy
+// is pre-bundled with esbuild to fold apache-arrow in and stay
+// dependency-free like every other vendor/ package; re-vendoring needs that
+// bundle step redone, not a plain file copy (see vendor/README.md).
+//
+// Only the "eh" (exception handling) and "coi" (cross-origin-isolated,
+// multi-threaded) wasm variants are vendored, not "mvp": `cooper web` always
+// serves with COOP/COEP (see src/web.rs), so this app is always cross-origin
+// isolated and "coi" — a strict superset of "eh" — is always preferred when
+// supported. "eh" is the fallback for anything that falls short of "coi"'s
+// requirements (SIMD/threads/isolation) but still supports WASM exception
+// handling — which covers every realistic case here: e2e tests and any
+// serving path other than `cooper web` (both leave crossOriginIsolated
+// false), plus Safari 15.2-16.3 (has exception handling, lacks SIMD). "mvp"
+// would only additionally cover browsers with no WASM exception-handling
+// support at all (pre-2021 Chrome/Firefox/Safari) — already unsupported by
+// this app's SharedArrayBuffer-dependent local-model story, so not worth
+// its ~4MB. Note DuckDB-wasm's compiled selectBundle unconditionally reads
+// bundles.mvp.mainModule in that last-resort branch regardless of which
+// keys are actually supplied, so on one of those ancient browsers this
+// throws a "Cannot read properties of undefined" instead of a clean error —
+// still just a rejected promise the tool-call pipeline catches normally,
+// just a worse message for an already-unsupported browser.
+//
+// DuckDB-wasm ships its own worker bundle, so instantiating it here spawns a
+// nested Worker inside the agent's own Worker (see worker.js); this is a
+// standard, well-supported use of the Worker API, not something specific to
+// this app.
 //
 // Workspace (OPFS) files are exposed to queries on demand via
 // `db.registerFileBuffer`, which hands DuckDB the file's full bytes up
@@ -22,8 +47,18 @@
 // query and hand its result straight to render_chart without reshaping it.
 import { readFileBlob } from "./workspace-fs.js";
 
-const DUCKDB_VERSION = "1.29.0";
-const DUCKDB_CDN = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${DUCKDB_VERSION}/+esm`;
+const VENDOR_DIR = new URL("./vendor/duckdb-wasm/", import.meta.url).href;
+const DUCKDB_BUNDLES = {
+  eh: {
+    mainModule: `${VENDOR_DIR}duckdb-eh.wasm`,
+    mainWorker: `${VENDOR_DIR}duckdb-browser-eh.worker.js`,
+  },
+  coi: {
+    mainModule: `${VENDOR_DIR}duckdb-coi.wasm`,
+    mainWorker: `${VENDOR_DIR}duckdb-browser-coi.worker.js`,
+    pthreadWorker: `${VENDOR_DIR}duckdb-browser-coi.pthread.worker.js`,
+  },
+};
 
 const MAX_ROWS = 1000;
 
@@ -36,15 +71,11 @@ let statePromise = null;
 async function ensureState() {
   if (!statePromise) {
     statePromise = (async () => {
-      const duckdb = await import(/* @vite-ignore */ DUCKDB_CDN);
-      const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
-      const workerUrl = URL.createObjectURL(
-        new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }),
-      );
-      const worker = new Worker(workerUrl);
+      const duckdb = await import(/* @vite-ignore */ `${VENDOR_DIR}duckdb-browser.esm.js`);
+      const bundle = await duckdb.selectBundle(DUCKDB_BUNDLES);
+      const worker = await duckdb.createWorker(bundle.mainWorker);
       const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
       await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-      URL.revokeObjectURL(workerUrl);
       const conn = await db.connect();
       // DuckDB-wasm doesn't autoload extensions by default the way native
       // DuckDB does — without this, read_csv_auto('https://...')/
