@@ -41,6 +41,22 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
   });
 }
 
+// Context panel collapse — persisted so the choice survives reloads.
+function setContextCollapsed(collapsed) {
+  document.querySelector(".session-layout").classList.toggle("context-collapsed", collapsed);
+  $("context-toggle").title = collapsed ? "Show context panel" : "Hide context panel";
+  $("context-toggle").setAttribute("aria-expanded", String(!collapsed));
+  localStorage.setItem("cooper-context-collapsed", collapsed ? "1" : "0");
+}
+
+$("context-toggle").addEventListener("click", () => {
+  setContextCollapsed(
+    !document.querySelector(".session-layout").classList.contains("context-collapsed"),
+  );
+});
+
+if (localStorage.getItem("cooper-context-collapsed") === "1") setContextCollapsed(true);
+
 // Renders the agent's stream as a vertical sequence of typed blocks
 // (reasoning / response / tool call / usage), each visually distinct.
 // Reasoning and tool blocks are collapsed by default with a one-line
