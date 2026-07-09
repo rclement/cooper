@@ -127,7 +127,8 @@ body {
    timeline is the scrolling middle and the composer is anchored below it.
    The page body doesn't scroll here — trim .content's bottom padding so the
    composer actually sits at the bottom edge. */
-.content:has(#view-sessions.is-active) {
+.content:has(#view-sessions.is-active),
+.content:has(#view-workspace.is-active) {
   padding-bottom: 1.5rem;
 }
 
@@ -1581,8 +1582,19 @@ details:not([open]) > .block-body {
 
 /* ---------- Workspace view ---------- */
 
+/* Like the sessions view: the workspace owns the viewport height, and the
+   tree/table panes scroll inside .ws-body instead of growing the page. */
 #view-workspace {
   max-width: none;
+  height: calc(100vh - 4rem); /* .content padding: 2.5rem top + 1.5rem bottom */
+}
+
+.ws-app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .ws-toolbar {
@@ -1613,7 +1625,7 @@ details:not([open]) > .block-body {
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  max-height: 32rem;
+  min-height: 0; /* bounded by .ws-body; the tree scrolls, the panel stays */
 }
 
 .ws-tree-container {
