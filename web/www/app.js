@@ -370,10 +370,18 @@ function clearTimeline() {
   generatingEl = null;
 }
 
+// The session list lives in the nav sidebar, visible from every view —
+// selecting a session (or starting a new one) also brings the Sessions
+// view forward.
+function showSessionsView() {
+  document.querySelector('.nav-item[data-view="sessions"]').click();
+}
+
 function startNewSession() {
   currentSession = null;
   clearTimeline();
   $("status").textContent = "";
+  showSessionsView();
   renderSessionList();
 }
 
@@ -560,6 +568,7 @@ function renderHistory(historyJson) {
 
 function loadSession(session) {
   currentSession = session;
+  showSessionsView();
   clearTimeline();
   if (session.history) renderHistory(session.history);
 
