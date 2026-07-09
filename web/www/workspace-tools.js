@@ -9,6 +9,24 @@
 // the main thread to see the effects (or vice versa).
 import { readFileText, writeFileText, listTree, gitClone } from "./workspace-fs.js";
 
+// Working directory for all tool paths — set when the session has a repo
+// attached (its clone dir), empty otherwise. Enforced here at the tool layer
+// rather than trusted to the prompt: every agent-supplied path is resolved
+// under it, so the agent can address the repo with plain relative paths and
+// cannot wander out of it (`..` is already rejected by toSegments). The main
+// thread sends it with each run message; worker.js forwards it here.
+let workingDir = "";
+
+export function setWorkingDir(dir) {
+  workingDir = dir ?? "";
+}
+
+function resolvePath(path) {
+  const rel = path ?? "";
+  if (!workingDir) return rel;
+  return rel ? `${workingDir}/${rel}` : workingDir;
+}
+
 export const WORKSPACE_TOOLS = {
   list_files: {
     schema: {
@@ -25,7 +43,7 @@ export const WORKSPACE_TOOLS = {
     },
     async execute(argsJson) {
       const { path } = JSON.parse(argsJson);
-      const lines = await listTree(path || "");
+      const lines = await listTree(resolvePath(path));
       return lines.length > 0 ? lines.join("\n") : "(empty directory)";
     },
   },
@@ -44,7 +62,7 @@ export const WORKSPACE_TOOLS = {
     },
     async execute(argsJson) {
       const { path } = JSON.parse(argsJson);
-      return await readFileText(path);
+      return await readFileText(resolvePath(path));
     },
   },
 
@@ -68,7 +86,7 @@ export const WORKSPACE_TOOLS = {
     },
     async execute(argsJson) {
       const { path, content } = JSON.parse(argsJson);
-      await writeFileText(path, content ?? "");
+      await writeFileText(resolvePath(path), content ?? "");
       return `Wrote ${(content ?? "").length} characters to "${path}".`;
     },
   },
@@ -98,7 +116,7 @@ export const WORKSPACE_TOOLS = {
     },
     async execute(argsJson) {
       const { path, old_text, new_text } = JSON.parse(argsJson);
-      const current = await readFileText(path);
+      const current = await readFileText(resolvePath(path));
       const occurrences = current.split(old_text).length - 1;
       if (occurrences === 0) {
         throw new Error(`old_text not found in "${path}".`);
@@ -107,7 +125,7 @@ export const WORKSPACE_TOOLS = {
         throw new Error(`old_text matches ${occurrences} locations in "${path}"; it must be unique.`);
       }
       const updated = current.replace(old_text, new_text ?? "");
-      await writeFileText(path, updated);
+      await writeFileText(resolvePath(path), updated);
       return `Edited "${path}".`;
     },
   },
@@ -116,7 +134,7 @@ export const WORKSPACE_TOOLS = {
     schema: {
       name: "git_clone",
       description:
-        "Clone a public git repository into the workspace via HTTP (through a CORS proxy). Fails if the destination already exists.",
+        "Clone a git repository into the workspace via HTTP (through a CORS proxy). Public repos always work; private repos work for providers the user has connected an account for in Settings. Fails if the destination already exists.",
       parameters: {
         url: {
           type: "string",
@@ -142,7 +160,7 @@ export const WORKSPACE_TOOLS = {
     },
     async execute(argsJson) {
       const { url, path, branch, shallow } = JSON.parse(argsJson);
-      await gitClone({ url, destPath: path, branch, shallow: shallow !== "false" });
+      await gitClone({ url, destPath: resolvePath(path), branch, shallow: shallow !== "false" });
       return `Cloned "${url}" into "${path}".`;
     },
   },

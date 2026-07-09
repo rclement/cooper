@@ -42,6 +42,11 @@ struct AgentConfig {
     agent_instructions: Option<String>,
     #[serde(default)]
     context_files: Vec<ContextFile>,
+    /// Surfaced in the system prompt as the current working directory (e.g.
+    /// the root of an attached repo clone). Informative only — enforcement
+    /// happens in the JS tools, which resolve paths against the same dir.
+    #[serde(default)]
+    working_dir: Option<String>,
 }
 
 /// A tool registered from JS: `schema` describes it to the model, and
@@ -201,8 +206,8 @@ pub struct WasmAgent {
 #[wasm_bindgen]
 impl WasmAgent {
     /// `config_json` fields: `base_url`, `api_key`, `model`, and optionally
-    /// `system_prompt_template`, `agent_instructions`, and `context_files`
-    /// (`[{ path, content }]`).
+    /// `system_prompt_template`, `agent_instructions`, `context_files`
+    /// (`[{ path, content }]`), and `working_dir`.
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str) -> Result<WasmAgent, JsValue> {
         let config: AgentConfig =
@@ -283,6 +288,7 @@ impl WasmAgent {
         };
         let system_prompt_template = self.config.system_prompt_template.clone();
         let agent_instructions = self.config.agent_instructions.clone();
+        let working_dir = self.config.working_dir.clone();
         let context_files: HashMap<String, String> = self
             .config
             .context_files
@@ -316,7 +322,7 @@ impl WasmAgent {
                 system_prompt_template,
                 agent_instructions,
                 &context_files,
-                None,
+                working_dir,
                 &tool_registry,
                 provider.as_ref(),
                 &handler,

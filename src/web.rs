@@ -15,11 +15,12 @@
 
 use std::path::{Path, PathBuf};
 
+use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -112,6 +113,119 @@ async fn git_proxy(
         .into_response()
 }
 
+// ---------- Git provider OAuth ----------
+//
+// The browser app runs the user-visible part of the OAuth dance (authorize
+// redirect, state check, token storage); the server's only job is the step
+// that must not happen client-side — exchanging the authorization code using
+// the client secret. Credentials come from env vars per provider
+// (GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET, GITLAB_CLIENT_ID/..., …); a
+// provider is "configured" when both are set. Tokens are returned to the
+// browser and never stored server-side.
+
+/// Known providers and where their code-for-token exchange lives. Adding a
+/// provider here (plus its entry in the browser's `GIT_PROVIDERS`) is all
+/// that's needed to support it.
+fn oauth_token_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "github" => Some("https://github.com/login/oauth/access_token"),
+        _ => None,
+    }
+}
+
+fn oauth_env_vars(provider: &str) -> (String, String) {
+    let prefix = provider.to_uppercase();
+    (
+        format!("{prefix}_CLIENT_ID"),
+        format!("{prefix}_CLIENT_SECRET"),
+    )
+}
+
+/// Client id + secret for `provider`, if both env vars are set and non-empty.
+fn oauth_credentials(provider: &str) -> Option<(String, String)> {
+    let (id_var, secret_var) = oauth_env_vars(provider);
+    let id = std::env::var(id_var).ok().filter(|v| !v.is_empty())?;
+    let secret = std::env::var(secret_var).ok().filter(|v| !v.is_empty())?;
+    Some((id, secret))
+}
+
+/// `GET /oauth/providers`: which providers this server can complete the
+/// token exchange for, with the public client id the browser needs to build
+/// the authorize URL. Secrets never leave the server.
+async fn oauth_providers() -> Json<serde_json::Value> {
+    let mut providers = serde_json::Map::new();
+    for name in ["github"] {
+        if let Some((client_id, _)) = oauth_credentials(name) {
+            providers.insert(
+                name.to_string(),
+                serde_json::json!({ "client_id": client_id }),
+            );
+        }
+    }
+    Json(serde_json::Value::Object(providers))
+}
+
+#[derive(serde::Deserialize)]
+struct TokenExchangeRequest {
+    code: String,
+    redirect_uri: Option<String>,
+}
+
+/// `POST /oauth/{provider}/token`: exchanges an authorization code for an
+/// access token, adding the client secret server-side. The upstream JSON is
+/// relayed verbatim — GitHub reports failures (expired code, bad client)
+/// as a 200 with an `error` field, which the browser handles.
+async fn oauth_token(
+    State(client): State<reqwest::Client>,
+    UrlPath(provider): UrlPath<String>,
+    Json(request): Json<TokenExchangeRequest>,
+) -> Response {
+    let Some(token_url) = oauth_token_url(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("unknown provider: {provider}"),
+        )
+            .into_response();
+    };
+    let Some((client_id, client_secret)) = oauth_credentials(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("provider not configured: {provider} (set client id/secret env vars)"),
+        )
+            .into_response();
+    };
+
+    let body = serde_json::json!({
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": request.code,
+        "redirect_uri": request.redirect_uri,
+    });
+
+    let upstream = match client
+        .post(token_url)
+        .header(header::ACCEPT, "application/json")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")).into_response();
+        }
+    };
+
+    let status = upstream.status();
+    let payload = upstream.bytes().await.unwrap_or_default();
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        payload,
+    )
+        .into_response()
+}
+
 /// Locates the `web/` directory to serve: an explicit `--dir`, or the
 /// checkout this binary was compiled from (fine for the usual
 /// build-and-run-from-the-repo workflow).
@@ -146,6 +260,8 @@ pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
         // Bare probe used by the web app to detect the same-origin proxy.
         .route("/git-proxy", any(|| async { StatusCode::NO_CONTENT }))
         .route("/git-proxy/{*rest}", any(git_proxy))
+        .route("/oauth/providers", get(oauth_providers))
+        .route("/oauth/{provider}/token", post(oauth_token))
         .with_state(client)
         .fallback_service(ServeDir::new(&web_dir))
         .layer(static_header(
@@ -208,6 +324,25 @@ mod tests {
     fn arbitrary_urls_are_rejected() {
         assert!(!is_git_request("example.com/anything", None));
         assert!(!is_git_request("example.com/anything", Some("foo=bar")));
+    }
+
+    #[test]
+    fn oauth_env_vars_follow_provider_name() {
+        assert_eq!(
+            oauth_env_vars("github"),
+            ("GITHUB_CLIENT_ID".into(), "GITHUB_CLIENT_SECRET".into())
+        );
+        assert_eq!(
+            oauth_env_vars("gitlab"),
+            ("GITLAB_CLIENT_ID".into(), "GITLAB_CLIENT_SECRET".into())
+        );
+    }
+
+    #[test]
+    fn only_known_providers_have_token_urls() {
+        assert!(oauth_token_url("github").is_some());
+        assert!(oauth_token_url("bitbucket").is_none());
+        assert!(oauth_token_url("").is_none());
     }
 
     #[test]

@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  OAuth redirect target. The provider sends the browser back here with
+  ?code=…&state=… (or ?error=…). The app page can't be reached through
+  window.opener — the server's COOP: same-origin severs the opener link the
+  moment the popup navigates to the provider — so the result is handed back
+  over a BroadcastChannel, which only needs same-origin, then the popup
+  closes itself.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cooper — connecting account…</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        display: grid;
+        place-items: center;
+        min-height: 80vh;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <p id="msg">Finishing sign-in…</p>
+    <script>
+      const params = new URLSearchParams(location.search);
+      new BroadcastChannel("cooper-oauth").postMessage({
+        code: params.get("code"),
+        state: params.get("state"),
+        error: params.get("error"),
+        errorDescription: params.get("error_description"),
+      });
+      document.getElementById("msg").textContent =
+        "Done — you can close this window.";
+      window.close();
+    </script>
+  </body>
+</html>
