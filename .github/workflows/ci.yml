@@ -79,16 +79,16 @@ jobs:
             echo "| **Total** | **${total_lines}%** | **${total_functions}%** | **${total_regions}%** |"
           } > coverage-summary.md
 
-      - name: Compute diff coverage with target branch
-        if: github.event_name == 'pull_request'
-        env:
-          TARGET_BRANCH: origin/${{ github.event.pull_request.base.ref }}
-        run: |
-          uvx diff-cover --compare-branch "$TARGET_BRANCH" --diff-range-notation '..' \
-            --ignore-staged --ignore-unstaged \
-            --format markdown:diff-coverage.md \
-            cobertura.xml
-          cat diff-coverage.md >> coverage-summary.md
+      # - name: Compute diff coverage with target branch
+      #   if: github.event_name == 'pull_request'
+      #   env:
+      #     TARGET_BRANCH: origin/${{ github.event.pull_request.base.ref }}
+      #   run: |
+      #     uvx diff-cover --compare-branch "$TARGET_BRANCH" --diff-range-notation '..' \
+      #       --ignore-staged --ignore-unstaged \
+      #       --format markdown:diff-coverage.md \
+      #       cobertura.xml
+      #     cat diff-coverage.md >> coverage-summary.md
 
       - name: Write to job summary
         run: cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
