@@ -51,7 +51,7 @@ A `.env` file in the working directory is also loaded if present
 Register the app on the provider side (GitHub: an OAuth App for all-repos
 access via the `repo` scope, or a GitHub App if users should pick which
 repositories to grant at install time) with the authorization callback URL
-pointing at `http://127.0.0.1:8080/www/oauth-callback.html` (adjust
+pointing at `http://127.0.0.1:8080/oauth-callback.html` (adjust
 host/port to match).
 
 The server only performs the code-for-token exchange (`/oauth/*` routes in
@@ -70,7 +70,7 @@ prompt carries it as the current working directory, and the repo's
 is recorded in session metadata, so resuming a session re-attaches its repo;
 deleting the session deletes the clone.
 
-The wasm package (`web/pkg/`) is built automatically by [build.rs](build.rs)
+The wasm package (`web/www/pkg/`) is built automatically by [build.rs](build.rs)
 whenever `web/` or `core/` sources change, as part of `cargo build`/`cargo run` on the CLI — install [`wasm-pack`](https://rustwasm.github.io/wasm-pack/)
 and it's picked up with no extra step:
 
@@ -80,7 +80,7 @@ cargo run -- web   # http://127.0.0.1:8080/
 
 If `wasm-pack` isn't installed, the build step is skipped with a warning
 (the native CLI doesn't need it) and `cooper web` will tell you to run
-`wasm-pack build --target web web/` manually. Set `COOPER_SKIP_WASM_BUILD=1`
+`wasm-pack build --target web --out-dir www/pkg web/` manually. Set `COOPER_SKIP_WASM_BUILD=1`
 to skip it even when `wasm-pack` is present (e.g. in CI).
 
 ## Configuration
@@ -112,7 +112,7 @@ Currently supported provider type: `openai-completions`.
 ## Layout
 
 - [src/](src/) — the `cooper` CLI: args, config, sessions, native tools, `cooper web` server
-- [build.rs](build.rs) — builds `web/pkg` via `wasm-pack` ahead of `cooper build`/`run`
+- [build.rs](build.rs) — builds `web/www/pkg` via `wasm-pack` ahead of `cooper build`/`run`
 - [core/](core/) — target-agnostic agent core (loop, providers, tool traits), shared by CLI and web
 - [web/](web/) — client-side web app: wasm bindings ([web/src/](web/src/)) and browser UI ([web/www/](web/www/))
 - [mock-server/](mock-server/) — canned OpenAI-compatible SSE server for deterministic testing
