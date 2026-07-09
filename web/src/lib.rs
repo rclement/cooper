@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use cooper_core::agent::{
-    self, AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall, Usage,
+    self, AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall,
 };
 use cooper_core::providers::Provider;
 use cooper_core::providers::openai_completions::OpenAICompletionsAPI;
@@ -177,7 +177,7 @@ impl Provider for JsBridgeProvider {
         }
         drop(on_chunk);
 
-        acc.finish(handler)
+        acc.finish()
     }
 }
 
@@ -356,14 +356,6 @@ impl AgentEventsHandler for JsEventHandler {
         });
     }
 
-    fn on_complete(&self, usage: &Usage) {
-        self.emit(&EventDto::Usage {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            total_tokens: usage.total_tokens,
-        });
-    }
-
     fn on_tool_call(&self, tool_call: &ToolCall) {
         self.emit(&EventDto::ToolCall {
             id: tool_call.id.clone(),
@@ -372,15 +364,9 @@ impl AgentEventsHandler for JsEventHandler {
         });
     }
 
-    fn on_tool_result(&self, tool_result: &Result<String, String>) {
-        self.emit(&EventDto::ToolResult {
-            result: tool_result.clone(),
-        });
-    }
-
-    fn on_system_prompt(&self, system_prompt: &str) {
-        self.emit(&EventDto::SystemPrompt {
-            text: system_prompt.to_string(),
+    fn on_message(&self, message: &Message) {
+        self.emit(&EventDto::Message {
+            message: message.clone(),
         });
     }
 }
@@ -394,21 +380,16 @@ enum EventDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
     },
-    Usage {
-        prompt_tokens: u64,
-        completion_tokens: u64,
-        total_tokens: u64,
-    },
     ToolCall {
         id: String,
         name: String,
         arguments: HashMap<String, String>,
     },
-    ToolResult {
-        result: Result<String, String>,
-    },
-    SystemPrompt {
-        text: String,
+    /// A finalized message, in the exact same JSON shape as one entry of the
+    /// exported history — timings, usage and timestamp included — so the UI
+    /// renders live events and replayed history through one code path.
+    Message {
+        message: Message,
     },
 }
 

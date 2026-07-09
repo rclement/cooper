@@ -33,15 +33,22 @@ function dayKey(ms) {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/// Derives per-session stats from its persisted `history` (see
+/// Derives per-session stats from its persisted `history` alone (see
 /// core/src/agent.rs's `Message`/`ToolCall` — the exact JSON shape exported
-/// by `WasmAgent::export_history` and stored verbatim by sessions.js) and
-/// `usageEvents` (see the `appendUsage` accumulator in app.js).
+/// by `WasmAgent::export_history` and stored verbatim by sessions.js).
+/// Token usage and timings live on the messages themselves, so history is
+/// the single source of truth — there's no separate usage log to keep in
+/// sync. Each assistant round with usage also yields a timestamped
+/// `usagePoints` entry (`at_ms` when the round started; sessions saved
+/// before timestamps existed fall back to the session's creation time), so
+/// charts can bucket token spend by when it actually happened.
 function analyzeSession(session) {
   const messages = session.history ? JSON.parse(session.history) : [];
   let turns = 0;
   const toolNameByCallId = new Map();
   const toolStats = new Map(); // name -> { count, errors }
+  const usage = { prompt: 0, completion: 0, total: 0 };
+  const usagePoints = []; // { at, prompt, completion }
 
   for (const m of messages) {
     if (m.User !== undefined) {
@@ -53,6 +60,17 @@ function analyzeSession(session) {
         s.count++;
         toolStats.set(tc.name, s);
       }
+      if (m.Assistant.usage) {
+        const { prompt_tokens, completion_tokens, total_tokens } = m.Assistant.usage;
+        usage.prompt += prompt_tokens ?? 0;
+        usage.completion += completion_tokens ?? 0;
+        usage.total += total_tokens ?? 0;
+        usagePoints.push({
+          at: m.Assistant.at_ms ?? session.createdAt,
+          prompt: prompt_tokens ?? 0,
+          completion: completion_tokens ?? 0,
+        });
+      }
     } else if (m.Tool !== undefined) {
       const name = toolNameByCallId.get(m.Tool.call_id);
       const stats = name && toolStats.get(name);
@@ -60,17 +78,7 @@ function analyzeSession(session) {
     }
   }
 
-  const usage = (session.usageEvents ?? []).reduce(
-    (acc, e) => {
-      acc.prompt += e.promptTokens ?? 0;
-      acc.completion += e.completionTokens ?? 0;
-      acc.total += e.totalTokens ?? 0;
-      return acc;
-    },
-    { prompt: 0, completion: 0, total: 0 },
-  );
-
-  return { turns, toolStats, usage };
+  return { turns, toolStats, usage, usagePoints };
 }
 
 function populateFilterOptions() {
@@ -183,12 +191,12 @@ function renderSessionsOverTime(sessions) {
 function renderTokensOverTime(sessions, analyzed) {
   const container = $("af-chart-tokens");
   const byDay = new Map();
-  for (let i = 0; i < sessions.length; i++) {
-    for (const e of sessions[i].usageEvents ?? []) {
-      const key = dayKey(e.at);
+  for (const a of analyzed) {
+    for (const point of a.usagePoints) {
+      const key = dayKey(point.at);
       const bucket = byDay.get(key) ?? { prompt: 0, completion: 0 };
-      bucket.prompt += e.promptTokens ?? 0;
-      bucket.completion += e.completionTokens ?? 0;
+      bucket.prompt += point.prompt;
+      bucket.completion += point.completion;
       byDay.set(key, bucket);
     }
   }

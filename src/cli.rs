@@ -41,22 +41,75 @@ impl agent::AgentEventsHandler for PrintHandler {
         let _ = std::io::stdout().flush();
     }
 
-    fn on_complete(&self, usage: &agent::Usage) {
-        println!(
-            "\n\n[usage] prompt tokens = {}, completion tokens = {}, total tokens = {}\n",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
-        );
-    }
-
     fn on_tool_call(&self, tool_call: &agent::ToolCall) {
         println!("[tool call] {} {:?}\n", tool_call.name, tool_call.arguments)
     }
 
-    fn on_tool_result(&self, tool_result: &Result<String, String>) {
-        match tool_result {
-            Ok(output) => println!("[tool result]\n{}\n", output),
-            Err(e) => println!("[tool error]\n{}\n", e),
+    fn on_message(&self, message: &agent::Message) {
+        match message {
+            agent::Message::Assistant {
+                usage,
+                reasoning_duration_ms,
+                response_duration_ms,
+                ..
+            } => {
+                if let Some(usage) = usage {
+                    println!(
+                        "\n\n[usage] prompt tokens = {}, completion tokens = {}, total tokens = {}\n",
+                        usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    );
+                }
+                if let Some(timing) = format_timing(*reasoning_duration_ms, *response_duration_ms) {
+                    println!("{timing}\n");
+                }
+            }
+            agent::Message::Tool {
+                result,
+                duration_ms,
+                ..
+            } => {
+                let suffix = duration_ms
+                    .map(|ms| format!(" ({})", format_duration(ms)))
+                    .unwrap_or_default();
+                match result {
+                    Ok(output) => println!("[tool result]{suffix}\n{output}\n"),
+                    Err(e) => println!("[tool error]{suffix}\n{e}\n"),
+                }
+            }
+            _ => {}
         }
+    }
+}
+
+/// Renders a duration the way a human reads it on a terminal: sub-second
+/// durations as milliseconds (precise enough to matter), longer ones as
+/// seconds with one decimal place (millisecond precision would just be noise).
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
+/// Builds the `[timing] reasoning = ..., response = ...` line from whichever
+/// phases were actually timed, or `None` if neither was — a plain-text
+/// response from a non-reasoning model has no reasoning phase to report, and
+/// a message reconstructed from history before this metadata existed has
+/// neither.
+fn format_timing(reasoning_ms: Option<u64>, response_ms: Option<u64>) -> Option<String> {
+    let parts: Vec<String> = [
+        reasoning_ms.map(|ms| format!("reasoning = {}", format_duration(ms))),
+        response_ms.map(|ms| format!("response = {}", format_duration(ms))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("[timing] {}", parts.join(", ")))
     }
 }
 
@@ -284,6 +337,10 @@ fn print_transcript(messages: &[agent::Message]) {
                 text,
                 reasoning,
                 tool_calls,
+                reasoning_duration_ms,
+                response_duration_ms,
+                usage,
+                ..
             } => {
                 if let Some(r) = reasoning {
                     println!("[reasoning] {r}\n");
@@ -294,11 +351,29 @@ fn print_transcript(messages: &[agent::Message]) {
                 for tc in tool_calls {
                     println!("[tool call] {} {:?}\n", tc.name, tc.arguments);
                 }
+                if let Some(usage) = usage {
+                    println!(
+                        "[usage] prompt tokens = {}, completion tokens = {}, total tokens = {}\n",
+                        usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    );
+                }
+                if let Some(timing) = format_timing(*reasoning_duration_ms, *response_duration_ms) {
+                    println!("{timing}\n");
+                }
             }
-            agent::Message::Tool { result, .. } => match result {
-                Ok(output) => println!("[tool result]\n{output}\n"),
-                Err(e) => println!("[tool error]\n{e}\n"),
-            },
+            agent::Message::Tool {
+                result,
+                duration_ms,
+                ..
+            } => {
+                let suffix = duration_ms
+                    .map(|ms| format!(" ({})", format_duration(ms)))
+                    .unwrap_or_default();
+                match result {
+                    Ok(output) => println!("[tool result]{suffix}\n{output}\n"),
+                    Err(e) => println!("[tool error]{suffix}\n{e}\n"),
+                }
+            }
         }
     }
 }
@@ -526,20 +601,57 @@ mod tests {
     }
 
     #[test]
-    fn print_handler_callbacks_do_not_panic() {
+    fn print_handler_reports_finalized_assistant_and_tool_messages_without_panicking() {
         let handler = PrintHandler::new();
 
-        handler.on_complete(&agent::Usage {
-            prompt_tokens: 1,
-            completion_tokens: 2,
-            total_tokens: 3,
-        });
         handler.on_tool_call(&agent::ToolCall {
             id: "1".to_string(),
             name: "echo".to_string(),
             arguments: HashMap::new(),
         });
-        handler.on_tool_result(&Ok("output".to_string()));
-        handler.on_tool_result(&Err("failure".to_string()));
+
+        let mut assistant_reply = agent::Message::assistant(Some("done".to_string()), None, vec![]);
+        if let agent::Message::Assistant {
+            usage,
+            reasoning_duration_ms,
+            response_duration_ms,
+            ..
+        } = &mut assistant_reply
+        {
+            *usage = Some(agent::Usage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+            });
+            *reasoning_duration_ms = Some(1200);
+            *response_duration_ms = Some(800);
+        }
+        handler.on_message(&assistant_reply);
+
+        handler.on_message(&agent::Message::Tool {
+            call_id: "1".to_string(),
+            result: Ok("output".to_string()),
+            duration_ms: Some(230),
+            at_ms: None,
+        });
+        handler.on_message(&agent::Message::Tool {
+            call_id: "1".to_string(),
+            result: Err("failure".to_string()),
+            duration_ms: None,
+            at_ms: None,
+        });
+    }
+
+    #[test]
+    fn formats_timing_line_from_whichever_phases_were_measured() {
+        assert_eq!(
+            format_timing(Some(1200), Some(800)),
+            Some("[timing] reasoning = 1.2s, response = 800ms".to_string())
+        );
+        assert_eq!(
+            format_timing(None, Some(500)),
+            Some("[timing] response = 500ms".to_string())
+        );
+        assert_eq!(format_timing(None, None), None);
     }
 }

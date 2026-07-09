@@ -6,8 +6,6 @@ use async_trait::async_trait;
 use crate::agent;
 use crate::tools;
 
-/// `?Send`: futures must run unmodified on single-threaded wasm targets,
-/// where JS-bound values (e.g. in a browser `Provider` impl) are not `Send`.
 #[async_trait(?Send)]
 pub trait Provider {
     async fn complete_stream(

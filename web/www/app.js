@@ -62,11 +62,15 @@ const BLOCK_KIND = {
 // pulsing icon for as long as they're the block actively being written to.
 const PULSING_KINDS = new Set(["reasoning", "tool"]);
 
-let current = { type: null, body: null, preview: null, raw: "", icon: null };
+let current = { type: null, body: null, preview: null, raw: "", icon: null, duration: null };
 
 function truncate(text, max = 90) {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+function formatDuration(ms) {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function stopPulse() {
@@ -92,7 +96,9 @@ function openBlock(type) {
   label.className = "block-label";
   label.textContent = kind.label;
 
-  header.append(icon, label);
+  const duration = document.createElement("span");
+  duration.className = "block-duration";
+  header.append(icon, label, duration);
 
   let preview = null;
   if (kind.collapsible) {
@@ -107,7 +113,7 @@ function openBlock(type) {
   el.append(header, body);
   $("timeline").appendChild(el);
 
-  current = { type, body, preview, raw: "", icon };
+  current = { type, body, preview, raw: "", icon, duration };
 }
 
 function appendPrompt(text) {
@@ -123,14 +129,26 @@ function appendSystemPrompt(text) {
   current.type = null; // one-shot; next event starts a fresh block
 }
 
+// The reasoning/response blocks of the round currently streaming. Kept so
+// the round's finalized `message` event (which carries the measured
+// durations) can stamp them onto the right blocks even though `current` may
+// have moved on by then. Cleared when the round is finalized.
+let roundBlocks = { reasoning: null, response: null };
+
 function appendReasoning(text) {
-  if (current.type !== "reasoning") openBlock("reasoning");
+  if (current.type !== "reasoning") {
+    openBlock("reasoning");
+    roundBlocks.reasoning = current;
+  }
   current.body.textContent += text;
   current.preview.textContent = truncate(current.body.textContent);
 }
 
 function appendResponse(text) {
-  if (current.type !== "response") openBlock("response");
+  if (current.type !== "response") {
+    openBlock("response");
+    roundBlocks.response = current;
+  }
   current.raw += text;
   current.body.innerHTML = renderMarkdown(current.raw);
 }
@@ -214,16 +232,33 @@ function appendSvgBlock(event) {
   }
 }
 
-function appendToolResult(event) {
-  // Normally the tool block itself is still `current` and gets the result
-  // appended in place. For an INLINE_TOOL_RENDERERS tool, a chart/image/svg
-  // block was opened right after it, so `current` now points there instead —
-  // route the result back onto the stashed tool block rather than losing it.
+// A finalized assistant round arrived — the message carries the measured
+// reasoning/response durations and the provider-reported token usage. The
+// content itself already streamed in as chunks (live) or was just rendered
+// (replay); here we only stamp the metadata onto this round's blocks.
+function applyAssistantMessage(assistant) {
+  if (roundBlocks.reasoning?.duration && assistant.reasoning_duration_ms != null) {
+    roundBlocks.reasoning.duration.textContent = formatDuration(assistant.reasoning_duration_ms);
+  }
+  if (roundBlocks.response?.duration && assistant.response_duration_ms != null) {
+    roundBlocks.response.duration.textContent = formatDuration(assistant.response_duration_ms);
+  }
+  roundBlocks = { reasoning: null, response: null };
+
+  if (assistant.usage) appendUsage(assistant.usage);
+}
+
+// A finalized tool result arrived. Normally the tool block itself is still
+// `current` and gets the result appended in place. For an
+// INLINE_TOOL_RENDERERS tool, a chart/image/svg block was opened right after
+// it, so `current` now points there instead — route the result back onto the
+// stashed tool block rather than losing it.
+function applyToolMessage(tool) {
   if (pendingToolResultBlock === null && current.type !== "tool") openBlock("tool");
   const block = pendingToolResultBlock ?? current;
   pendingToolResultBlock = null;
 
-  const { Ok, Err } = event.result;
+  const { Ok, Err } = tool.result;
   const isError = Err !== undefined;
 
   const line = document.createElement("div");
@@ -231,6 +266,9 @@ function appendToolResult(event) {
   line.textContent = isError ? `◀ error: ${Err}` : `◀ ${Ok}`;
   block.body.appendChild(line);
   block.preview.textContent = `${isError ? "✗" : "✓"} ${block.preview.textContent}`;
+  if (block.duration && tool.duration_ms != null) {
+    block.duration.textContent = formatDuration(tool.duration_ms);
+  }
 
   stopPulse();
   // Whichever block is actually open right now (the tool block in the
@@ -240,28 +278,15 @@ function appendToolResult(event) {
   current.type = null;
 }
 
-function appendUsage(event) {
+function appendUsage(usage) {
   stopPulse();
   const el = document.createElement("div");
   el.className = "block block-usage";
   el.textContent =
-    `${event.total_tokens} tokens` +
-    ` · ${event.prompt_tokens} prompt · ${event.completion_tokens} completion`;
+    `${usage.total_tokens} tokens` +
+    ` · ${usage.prompt_tokens} prompt · ${usage.completion_tokens} completion`;
   $("timeline").appendChild(el);
-  current = { type: null, body: null, preview: null, raw: "", icon: null };
-
-  // Each usage event is one completion round's totals (a turn can have
-  // several — the initial response plus one per tool-result follow-up).
-  // Persisted alongside `history` so the analytics view has real token data
-  // instead of numbers that vanish the moment the timeline scrolls past them.
-  if (currentSession) {
-    (currentSession.usageEvents ??= []).push({
-      at: Date.now(),
-      promptTokens: event.prompt_tokens,
-      completionTokens: event.completion_tokens,
-      totalTokens: event.total_tokens,
-    });
-  }
+  current = { type: null, body: null, preview: null, raw: "", icon: null, duration: null };
 }
 
 // Placeholder block shown while a local model is prefilling/decoding but
@@ -300,21 +325,20 @@ function clearGenerating() {
 function handleEvent(event) {
   clearGenerating();
   switch (event.type) {
-    case "system_prompt":
-      appendSystemPrompt(event.text);
-      break;
     case "chunk":
       if (event.reasoning) appendReasoning(event.reasoning);
       if (event.text) appendResponse(event.text);
       break;
-    case "usage":
-      appendUsage(event);
-      break;
     case "tool_call":
       appendToolCall(event);
       break;
-    case "tool_result":
-      appendToolResult(event);
+    // A finalized message — same JSON shape as one entry of the exported
+    // history (externally tagged: `{ System: "..." }`, `{ Assistant: {...} }`,
+    // `{ Tool: {...} }`), so this and renderHistory share the same code.
+    case "message":
+      if (event.message.System !== undefined) appendSystemPrompt(event.message.System);
+      if (event.message.Assistant) applyAssistantMessage(event.message.Assistant);
+      if (event.message.Tool) applyToolMessage(event.message.Tool);
       break;
   }
 }
@@ -340,7 +364,9 @@ function uid() {
 
 function clearTimeline() {
   $("timeline").innerHTML = "";
-  current = { type: null, body: null, preview: null, raw: "", icon: null };
+  current = { type: null, body: null, preview: null, raw: "", icon: null, duration: null };
+  roundBlocks = { reasoning: null, response: null };
+  pendingToolResultBlock = null;
   generatingEl = null;
 }
 
@@ -360,12 +386,20 @@ function handleWorkerMessage(message) {
   } else if (msg.type === "done") {
     stopPulse();
     clearGenerating();
-    $("status").textContent = "done";
     setRunning(false);
     if (currentSession) {
       currentSession.updatedAt = Date.now();
       currentSession.history = msg.history;
-      saveSession(currentSession).then(renderSessionList);
+      // "done" is announced only once the session is actually persisted.
+      // Announcing it before the IndexedDB write commits would invite
+      // navigating away while the write is in flight — navigation aborts
+      // pending transactions, silently losing the turn.
+      saveSession(currentSession).then(() => {
+        renderSessionList();
+        $("status").textContent = "done";
+      });
+    } else {
+      $("status").textContent = "done";
     }
   } else if (msg.type === "error") {
     stopPulse();
@@ -462,7 +496,6 @@ $("run").addEventListener("click", () => {
       // display name stored in `model` — needed to re-select on restore.
       modelId: providerConfig.modelId ?? providerConfig.model,
       history: null,
-      usageEvents: [],
     };
   }
 
@@ -508,14 +541,19 @@ function renderHistory(historyJson) {
     } else if (message.User !== undefined) {
       appendPrompt(message.User);
     } else if (message.Assistant !== undefined) {
+      // Render the content that streamed in as chunks live, then apply the
+      // same metadata finalization the live `message` event goes through —
+      // durations, usage and results replay for free because they were
+      // persisted on the message itself.
       const { text, reasoning, tool_calls } = message.Assistant;
       if (reasoning) appendReasoning(reasoning);
       if (text) appendResponse(text);
+      applyAssistantMessage(message.Assistant);
       for (const toolCall of tool_calls) {
         appendToolCall(toolCall);
       }
     } else if (message.Tool !== undefined) {
-      appendToolResult({ result: message.Tool.result });
+      applyToolMessage(message.Tool);
     }
   }
 }
