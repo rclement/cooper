@@ -277,13 +277,6 @@ function render() {
   const block = document.createElement("div");
   block.className = "provider";
 
-  const header = document.createElement("div");
-  header.className = "provider-header";
-  const title = document.createElement("span");
-  title.className = "provider-name";
-  title.textContent = "Connected accounts";
-  header.appendChild(title);
-
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent =
@@ -293,7 +286,7 @@ function render() {
       : "Connect a git account to let git_clone access your private " +
         "repositories. Tokens are stored in this browser only.";
 
-  block.append(header, hint);
+  block.append(hint);
   for (const name of Object.keys(GIT_PROVIDERS)) {
     // With no server support, only show providers that still hold a stored
     // account (so they can be disconnected).

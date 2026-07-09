@@ -546,6 +546,14 @@ body {
   opacity: 1;
 }
 
+/* Settings: a titled group of related cards — the heading hugs its content
+   (0.9rem) while the .view gap (2rem) separates the groups themselves. */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
 .provider-list {
   display: flex;
   flex-direction: column;
@@ -575,8 +583,10 @@ body {
   padding-left: 0;
 }
 
-.provider-name:hover,
-.provider-name:focus {
+/* Only the editable variant (custom providers are <input>s) gets the
+   hover affordance — static <span> titles must not shift. */
+input.provider-name:hover,
+input.provider-name:focus {
   border-color: var(--border);
   padding-left: 0.7em;
 }
@@ -828,13 +838,13 @@ body {
   padding: 0.5em 0.9em;
 }
 
+/* Lives inside a .provider card (like the provider blocks above it), so no
+   separator of its own. */
 .add-provider-form {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr auto;
   gap: 0.6rem;
   align-items: end;
-  border-top: 1px solid var(--border);
-  padding-top: 1rem;
 }
 
 .add-provider-form button {
