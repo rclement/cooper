@@ -54,17 +54,6 @@
               </p>
 
               <section class="prompt-area">
-                <div class="config">
-                  <div class="field">
-                    <label for="provider-select">Provider</label>
-                    <select id="provider-select"></select>
-                  </div>
-                  <div class="field">
-                    <label for="model-select">Model</label>
-                    <select id="model-select"></select>
-                  </div>
-                </div>
-
                 <div id="repo-attach"></div>
 
                 <label for="prompt">Prompt</label>
@@ -75,6 +64,12 @@
                     Stop
                   </button>
                   <span id="status" class="status"></span>
+                  <button
+                    id="model-indicator"
+                    type="button"
+                    class="model-indicator"
+                    title="Provider & model — change in the context panel"
+                  ></button>
                 </div>
               </section>
 
@@ -92,6 +87,20 @@
             </button>
 
             <aside class="context-panel">
+              <div class="context-section">
+                <h3>Provider &amp; model</h3>
+                <div class="config">
+                  <div class="field">
+                    <label for="provider-select">Provider</label>
+                    <select id="provider-select"></select>
+                  </div>
+                  <div class="field">
+                    <label for="model-select">Model</label>
+                    <select id="model-select"></select>
+                  </div>
+                </div>
+              </div>
+
               <div class="context-section">
                 <div class="context-section-title">
                   <h3>Tools</h3>

@@ -405,11 +405,29 @@ function renderModelSelect() {
   select.disabled = models.length === 0;
 }
 
+// The always-visible "model in use" pill in the prompt area — the selects
+// themselves live in the collapsible context panel, so this is what tells
+// the user which model a Run will hit when the panel is hidden.
+function renderModelIndicator() {
+  const indicator = $("model-indicator");
+  if (!indicator) return;
+  const isLocal = settings.defaultProviderId === LOCAL_PROVIDER_ID;
+  const providerName = isLocal
+    ? LOCAL_PROVIDER_NAME
+    : findProvider(settings.defaultProviderId)?.name;
+  const modelName = isLocal
+    ? findLocalModel(settings.defaultModel)?.name
+    : settings.defaultModel;
+  indicator.textContent =
+    providerName && modelName ? `${modelName} · ${providerName}` : "no model configured";
+}
+
 function renderAll() {
   renderProviderList();
   renderLocalProviderBlock();
   renderProviderSelect();
   renderModelSelect();
+  renderModelIndicator();
 }
 
 export function initSettings() {
@@ -424,11 +442,13 @@ export function initSettings() {
     ensureValidDefaults();
     persist();
     renderModelSelect();
+    renderModelIndicator();
   });
 
   $("model-select").addEventListener("change", (event) => {
     settings.defaultModel = event.target.value;
     persist();
+    renderModelIndicator();
   });
 
   $("add-provider-form").addEventListener("submit", (event) => {

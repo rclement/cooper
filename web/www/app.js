@@ -88,6 +88,13 @@ $("context-toggle").addEventListener("click", () => {
 
 if (localStorage.getItem("cooper-context-collapsed") === "1") setContextCollapsed(true);
 
+// The pill shows the active provider/model; the selects live in the context
+// panel, so clicking it opens the panel at that section.
+$("model-indicator").addEventListener("click", () => {
+  setContextCollapsed(false);
+  document.querySelector(".context-panel .config").scrollIntoView({ block: "nearest" });
+});
+
 // Renders the agent's stream as a vertical sequence of typed blocks
 // (reasoning / response / tool call / usage), each visually distinct.
 // Reasoning and tool blocks are collapsed by default with a one-line
@@ -578,6 +585,14 @@ $("run").addEventListener("click", async () => {
       history: null,
     };
     markAttachedRepoUsed();
+  } else {
+    // Provider/model may legitimately change between turns (each run
+    // rebuilds the agent from the current selection); keep the metadata
+    // truthful — it feeds the session list and the selects on restore.
+    currentSession.providerName = providerConfig.providerName;
+    currentSession.providerId = providerConfig.providerId;
+    currentSession.model = providerConfig.model;
+    currentSession.modelId = providerConfig.modelId ?? providerConfig.model;
   }
 
   appendPrompt(prompt);
