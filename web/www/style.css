@@ -254,6 +254,49 @@ body {
   gap: 1.25rem;
   position: sticky;
   top: 2.5rem;
+  /* Scrolls on its own instead of stretching the page: reaching the last
+     section never requires scrolling past the whole session timeline. */
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.context-toggle {
+  flex-shrink: 0;
+  position: sticky;
+  top: 2.5rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+  margin-left: -1rem; /* pull toward the timeline; the panel gap is wide */
+}
+
+.context-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.context-toggle svg {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 0.15s ease;
+}
+
+.session-layout.context-collapsed .context-toggle svg {
+  transform: rotate(180deg);
+}
+
+.session-layout.context-collapsed .context-panel {
+  display: none;
 }
 
 .context-section {
@@ -1714,6 +1757,13 @@ details:not([open]) > .block-body {
   .context-panel {
     width: 100%;
     position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .context-toggle {
+    position: static;
+    margin-left: 0;
   }
 }
 
