@@ -117,3 +117,9 @@ Currently supported provider type: `openai-completions`.
 - [web/](web/) — client-side web app: wasm bindings ([web/src/](web/src/)) and browser UI ([web/www/](web/www/))
 - [mock-server/](mock-server/) — canned OpenAI-compatible SSE server for deterministic testing
 - [e2e/](e2e/) — browser end-to-end tests for the web app (headless Chromium)
+
+## License
+
+Licensed under GNU Affero General Public License v3.0 (AGPLv3)
+
+Copyright (c) 2026 - present  Romain Clement
