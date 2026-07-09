@@ -1,18 +1,15 @@
 // Agent tool that runs Python in-browser via Pyodide (CPython compiled to
-// wasm), loaded lazily from its CDN build the same way workspace-fs.js loads
-// isomorphic-git — no bundler, no server round-trip, consistent with every
-// other tool here running fully client-side.
-//
-// The workspace (OPFS) root is mounted into Pyodide's filesystem at
-// /workspace via `mountNativeFS`, which accepts any FileSystemDirectoryHandle
-// — OPFS's root handle qualifies — so `open("/workspace/notes.txt")` et al.
-// read/write the exact same files visible in the Workspace view. Native FS
-// mounts are write-buffered internally; `syncfs()` flushes them back to OPFS,
-// so it's called after every run rather than left to chance.
+// wasm). The interpreter itself (pyodide.mjs/.asm.wasm, stdlib) is vendored
+// under vendor/pyodide/ — see vendor/README.md — so startup doesn't depend
+// on a CDN being reachable. Individual packages (numpy, pandas, etc.) are
+// NOT vendored: they aren't part of the pyodide npm distribution at all and
+// are fetched lazily from jsDelivr's package repository only the first time
+// something actually imports them, via `packageBaseUrl` below.
 import { getRoot } from "./workspace-fs.js";
 
 const PYODIDE_VERSION = "0.29.4";
-const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+const PYODIDE_INDEX_URL = new URL("./vendor/pyodide/", import.meta.url).href;
+const PYODIDE_PACKAGE_BASE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 // Lazily created once per Worker (or tab, for a hypothetical main-thread
 // use), then reused across calls — loading the runtime is the expensive
@@ -23,8 +20,11 @@ let statePromise = null;
 async function ensureState() {
   if (!statePromise) {
     statePromise = (async () => {
-      const { loadPyodide } = await import(/* @vite-ignore */ `${PYODIDE_CDN}pyodide.mjs`);
-      const pyodide = await loadPyodide({ indexURL: PYODIDE_CDN });
+      const { loadPyodide } = await import(/* @vite-ignore */ `${PYODIDE_INDEX_URL}pyodide.mjs`);
+      const pyodide = await loadPyodide({
+        indexURL: PYODIDE_INDEX_URL,
+        packageBaseUrl: PYODIDE_PACKAGE_BASE_URL,
+      });
       const nativeFs = await pyodide.mountNativeFS("/workspace", await getRoot());
       // micropip itself ships as a Pyodide package, not a stdlib module —
       // without this, `import micropip` fails with ModuleNotFoundError on
