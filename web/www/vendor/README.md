@@ -13,12 +13,15 @@ spills across packages.
 | `pyodide/` | [pyodide](https://www.npmjs.com/package/pyodide) | 0.29.4 | MPL-2.0 (`pyodide/LICENSE`) | `run_python` tool — in-browser Python interpreter |
 | `duckdb-wasm/` | [@duckdb/duckdb-wasm](https://www.npmjs.com/package/@duckdb/duckdb-wasm) | 1.29.0 | MIT (`duckdb-wasm/LICENSE`) | `run_sql` tool — in-browser analytical database |
 
-To re-vendor or bump a version: `npm pack <pkg>` into a scratch dir, extract,
-copy the package's dependency-free ESM build (and its `LICENSE`) over the
-matching `vendor/<pkg>/` directory, update the version/table above. If a
-package ever needs a local patch, apply it directly inside its
-`vendor/<pkg>/` directory and note the patch at the top of the file — it
-won't affect any other vendored package.
+To re-vendor everything, or bump one package's version: `./update.sh`
+(all packages, at the versions pinned in the script) or
+`./update.sh <pkg> [version]` (one package, optionally at a version other
+than the one pinned in the script). Edit the `*_VERSION` variable at the
+top of the script to change the default, then update the version in the
+table above. If a package ever needs a local patch, apply it directly
+inside its `vendor/<pkg>/` directory and note the patch at the top of the
+file — it won't affect any other vendored package, and re-running
+`update.sh` will clobber it, so re-apply after any re-vendor.
 
 ## pyodide
 
@@ -34,14 +37,9 @@ local `indexURL` used for the interpreter itself.
 
 The npm build's browser ESM entrypoint imports `apache-arrow` as a bare
 specifier rather than inlining it, so a plain copy isn't dependency-free
-like the other vendored packages. `duckdb-browser.esm.js` here is instead
-pre-bundled with esbuild against `apache-arrow` to fold it in:
-
-```sh
-npm pack @duckdb/duckdb-wasm@<version>  # extract, then in a scratch dir:
-npm install apache-arrow@<matching semver from its package.json>
-npx esbuild duckdb-browser.mjs --bundle --format=esm --outfile=duckdb-browser.esm.js
-```
+like the other vendored packages. `update.sh` handles this by pre-bundling
+`duckdb-browser.esm.js` with esbuild against the exact `apache-arrow`
+semver range duckdb-wasm itself depends on — no manual step needed.
 
 Only the `eh` (exception handling) and `coi` (cross-origin-isolated,
 multi-threaded) wasm variants are vendored — not `mvp`. `cooper web` always
@@ -59,9 +57,7 @@ in that last-resort branch regardless of which keys are supplied, so on one
 of those ancient browsers this throws a "Cannot read properties of
 undefined" instead of a clean error — still just a rejected promise the
 tool-call pipeline catches normally, just a worse message for an
-already-unsupported browser.) Re-vendor both `duckdb-eh.wasm` and
-`duckdb-coi.wasm` plus their matching `duckdb-browser-*.worker.js` /
-`duckdb-browser-coi.pthread.worker.js` files from `dist/`.
+already-unsupported browser.)
 
 Assistant responses are untrusted model output. `marked` only parses
 markdown into HTML; it does not defend against a model emitting raw
