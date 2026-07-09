@@ -233,30 +233,41 @@
         </section>
 
         <section id="view-settings" class="view">
-          <div id="local-provider" class="provider-list"></div>
+          <div class="settings-group">
+            <h2>Model providers</h2>
 
-          <div id="provider-list" class="provider-list"></div>
+            <div id="local-provider" class="provider-list"></div>
 
-          <form id="add-provider-form" class="add-provider-form">
-            <div class="field">
-              <label for="new-provider-name">Name</label>
-              <input id="new-provider-name" placeholder="e.g. Ollama (local)" />
-            </div>
-            <div class="field">
-              <label for="new-provider-base-url">Base URL</label>
-              <input
-                id="new-provider-base-url"
-                placeholder="http://localhost:11434/v1"
-              />
-            </div>
-            <div class="field">
-              <label for="new-provider-api-key">API key</label>
-              <input id="new-provider-api-key" type="password" placeholder="(optional)" />
-            </div>
-            <button type="submit">Add provider</button>
-          </form>
+            <div id="provider-list" class="provider-list"></div>
 
-          <div id="git-accounts" class="provider-list"></div>
+            <div class="provider">
+              <span class="provider-name">Add a provider</span>
+              <form id="add-provider-form" class="add-provider-form">
+                <div class="field">
+                  <label for="new-provider-name">Name</label>
+                  <input id="new-provider-name" placeholder="e.g. Ollama (local)" />
+                </div>
+                <div class="field">
+                  <label for="new-provider-base-url">Base URL</label>
+                  <input
+                    id="new-provider-base-url"
+                    placeholder="http://localhost:11434/v1"
+                  />
+                </div>
+                <div class="field">
+                  <label for="new-provider-api-key">API key</label>
+                  <input id="new-provider-api-key" type="password" placeholder="(optional)" />
+                </div>
+                <button type="submit">Add provider</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h2>Git accounts</h2>
+
+            <div id="git-accounts" class="provider-list"></div>
+          </div>
 
           <button id="reset-settings" type="button" class="danger">
             Reset all settings
