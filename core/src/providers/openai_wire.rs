@@ -172,6 +172,7 @@ impl From<&ToolSchema> for ApiTool {
 pub struct ApiCompletionRequest {
     pub model: String,
     pub messages: Vec<ApiMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ApiTool>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
