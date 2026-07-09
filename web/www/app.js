@@ -95,6 +95,23 @@ $("model-indicator").addEventListener("click", () => {
   document.querySelector(".context-panel .config").scrollIntoView({ block: "nearest" });
 });
 
+// Timeline autoscroll: the timeline is the scrolling element (the composer
+// is anchored below it), and it sticks to the newest content — new blocks
+// and streamed text alike, hence the MutationObserver rather than hooks in
+// every append site. Scrolling up to read releases the stick; returning to
+// (near) the bottom re-engages it.
+const timelineEl = $("timeline");
+let timelineStick = true;
+
+timelineEl.addEventListener("scroll", () => {
+  timelineStick =
+    timelineEl.scrollHeight - timelineEl.scrollTop - timelineEl.clientHeight < 40;
+});
+
+new MutationObserver(() => {
+  if (timelineStick) timelineEl.scrollTop = timelineEl.scrollHeight;
+}).observe(timelineEl, { childList: true, subtree: true, characterData: true });
+
 // Renders the agent's stream as a vertical sequence of typed blocks
 // (reasoning / response / tool call / usage), each visually distinct.
 // Reasoning and tool blocks are collapsed by default with a one-line
