@@ -18,7 +18,7 @@
 // going out over HTTP. Model download/load progress is reported with
 // { type: 'model_progress', loaded, total } and
 // { type: 'model_status', status: 'loading' | 'ready' } messages.
-import init, { WasmAgent } from "../pkg/cooper_web.js";
+import init, { WasmAgent } from "./pkg/cooper_web.js";
 import { ALL_TOOLS } from "./tools.js";
 import { setGitAuth } from "./workspace-fs.js";
 import { setWorkingDir } from "./workspace-tools.js";

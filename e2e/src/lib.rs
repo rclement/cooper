@@ -1,7 +1,7 @@
 //! Shared plumbing for the e2e suite: runs the real `cooper-mock-server`
 //! in-process (scripted OpenAI-compatible SSE responses) and a small static
-//! file server for `web/` (so `pkg/` and `www/` are reachable exactly as in
-//! real usage), then drives the app with a real headless Chromium via
+//! file server for `web/` (the app is self-contained under `www/`, wasm pkg
+//! included), then drives the app with a real headless Chromium via
 //! `chromiumoxide` (talks directly to the Chrome DevTools Protocol — no
 //! Node.js anywhere in this crate or its dependency graph). The browser
 //! binary itself is fetched and cached by `chromiumoxide_fetcher` rather
@@ -30,10 +30,10 @@ pub fn repo_root() -> PathBuf {
 /// Fails fast with a clear message instead of an opaque browser/network
 /// error if the wasm build hasn't been produced yet.
 pub fn assert_prerequisites_built() -> Result<(), Box<dyn std::error::Error>> {
-    let pkg_marker = repo_root().join("web/pkg/cooper_web.js");
+    let pkg_marker = repo_root().join("web/www/pkg/cooper_web.js");
     if !pkg_marker.exists() {
         return Err(format!(
-            "wasm build not found at {} — run `wasm-pack build --target web` in web/ first.",
+            "wasm build not found at {} — run `wasm-pack build --target web --out-dir www/pkg` in web/ first.",
             pkg_marker.display()
         )
         .into());
@@ -121,8 +121,8 @@ impl Drop for StaticServer {
     }
 }
 
-/// Serves `web/` (so `pkg/` and `www/` are reachable as siblings, matching
-/// how worker.js imports `../pkg/cooper_web.js`).
+/// Serves `web/` (the app is self-contained under `www/`, wasm pkg
+/// included, so `/www/index.html` works as a plain static path).
 pub async fn start_static_server() -> Result<StaticServer, Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

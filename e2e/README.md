@@ -10,7 +10,7 @@ a comprehensive suite — just the main features, as regression coverage.
 ## Prerequisites
 
 ```sh
-wasm-pack build --target web  # from web/, produces web/pkg/
+wasm-pack build --target web --out-dir www/pkg  # from web/, produces web/www/pkg/
 ```
 
 `cooper-mock-server` is run in-process via its library API, so no separate

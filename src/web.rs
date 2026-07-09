@@ -1,6 +1,7 @@
-//! `cooper web`: serves the browser app (`web/www` + the wasm-pack output in
-//! `web/pkg`) with the headers the app needs, plus a same-origin git CORS
-//! proxy so workspace cloning doesn't depend on cors.isomorphic-git.org.
+//! `cooper web`: serves the browser app (`web/www`, wasm-pack output
+//! included at `web/www/pkg`) with the headers the app needs, plus a
+//! same-origin git CORS proxy so workspace cloning doesn't depend on
+//! cors.isomorphic-git.org.
 //!
 //! Headers that plain static servers don't send:
 //!
@@ -19,7 +20,7 @@ use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -243,27 +244,29 @@ pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
         );
         std::process::exit(1);
     }
-    if !web_dir.join("pkg/cooper_web.js").is_file() {
+    if !web_dir.join("www/pkg/cooper_web.js").is_file() {
         eprintln!(
-            "wasm package not found at {}; build it first:\n  wasm-pack build --target web web/",
-            web_dir.join("pkg").display()
+            "wasm package not found at {}; build it first:\n  wasm-pack build --target web --out-dir www/pkg web/",
+            web_dir.join("www/pkg").display()
         );
         std::process::exit(1);
     }
 
     let client = reqwest::Client::new();
     let app = axum::Router::new()
-        .route(
-            "/",
-            get(|| async { Redirect::temporary("/www/index.html") }),
-        )
         // Bare probe used by the web app to detect the same-origin proxy.
         .route("/git-proxy", any(|| async { StatusCode::NO_CONTENT }))
         .route("/git-proxy/{*rest}", any(git_proxy))
         .route("/oauth/providers", get(oauth_providers))
         .route("/oauth/{provider}/token", post(oauth_token))
         .with_state(client)
-        .fallback_service(ServeDir::new(&web_dir))
+        // The app lives at the root (`/` serves www/index.html — ServeDir
+        // appends index.html on directory requests; www/ is self-contained,
+        // wasm pkg included). The legacy `/www/*` mount keeps pre-existing
+        // deep links working — notably OAuth callback URLs registered as
+        // /www/oauth-callback.html.
+        .nest_service("/www", ServeDir::new(web_dir.join("www")))
+        .fallback_service(ServeDir::new(web_dir.join("www")))
         .layer(static_header(
             HeaderName::from_static("cross-origin-opener-policy"),
             "same-origin",
