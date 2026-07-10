@@ -168,6 +168,10 @@ enum Command {
         /// Port to listen on
         #[arg(long, short = 'P', default_value_t = 8080)]
         port: u16,
+        /// Address to bind — the default stays local-only; pass 0.0.0.0 to
+        /// accept outside connections (e.g. from a container's port mapping)
+        #[arg(long, short = 'H', default_value = "127.0.0.1")]
+        host: String,
         /// Directory holding the web app (defaults to the `web/` directory of
         /// the checkout this binary was built from)
         #[arg(long, short = 'd')]
@@ -544,7 +548,7 @@ pub async fn run() {
             SessionsCommand::List => sessions_list_cmd(),
             SessionsCommand::Show { id } => sessions_show_cmd(id),
         },
-        Command::Web { port, dir } => crate::web::web_cmd(port, dir).await,
+        Command::Web { port, host, dir } => crate::web::web_cmd(host, port, dir).await,
     }
 }
 

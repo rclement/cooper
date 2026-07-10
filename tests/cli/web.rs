@@ -50,7 +50,32 @@ fn reports_a_port_already_in_use() {
     let output = cli.run(&["web", "-d", dir.to_str().unwrap(), "-P", &port.to_string()]);
 
     assert!(!output.status.success());
-    assert!(stderr(&output).contains(&format!("failed to bind port {port}")));
+    assert!(stderr(&output).contains(&format!("failed to bind 127.0.0.1:{port}")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binds_the_requested_host() {
+    let cli = Cli::without_config();
+    let dir = fake_web_dir(&cli);
+    let port = free_port();
+    let _server = cli.spawn(
+        &[
+            "web",
+            "-d",
+            dir.to_str().unwrap(),
+            "-P",
+            &port.to_string(),
+            "--host",
+            "0.0.0.0",
+        ],
+        &[],
+    );
+    wait_until_listening(format!("127.0.0.1:{port}").parse().unwrap());
+
+    let index = reqwest::get(format!("http://127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    assert!(index.text().await.unwrap().contains("<h1>cooper</h1>"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

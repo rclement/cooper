@@ -279,7 +279,7 @@ fn app(web_dir: &Path, upstreams: Upstreams) -> axum::Router {
         .layer(static_header(header::CACHE_CONTROL, "no-store"))
 }
 
-pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
+pub async fn web_cmd(host: String, port: u16, dir: Option<PathBuf>) {
     let web_dir = resolve_web_dir(dir);
 
     if !web_dir.join("www/index.html").is_file() {
@@ -299,14 +299,14 @@ pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
 
     let app = app(&web_dir, Upstreams::real());
 
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+    let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("failed to bind port {port}: {e}");
+            eprintln!("failed to bind {host}:{port}: {e}");
             std::process::exit(1);
         }
     };
-    println!("serving http://127.0.0.1:{port}/ (cross-origin isolated, git proxy at /git-proxy)");
+    println!("serving http://{host}:{port}/ (cross-origin isolated, git proxy at /git-proxy)");
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("server error: {e}");
         std::process::exit(1);
