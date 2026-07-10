@@ -1,35 +1,54 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-/// `HOME` is a process-global env var, so any test that overrides it (to
-/// point `dirs::home_dir()` at a temp dir) must serialize against every
-/// *other* test doing the same — not just other tests in the same module.
-/// A single shared lock, used by every module's tests, is what makes that
-/// true; per-module locks look safe in isolation but let tests in different
-/// modules race on the same env var when run in parallel.
-static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// Environment variables are process-global, so any test that overrides one
+/// (`HOME` to point `dirs::home_dir()` at a temp dir, `GITHUB_CLIENT_ID` to
+/// configure OAuth) must serialize against every *other* test doing the
+/// same — not just other tests in the same module. A single shared lock,
+/// used by every module's tests, is what makes that true; per-module locks
+/// look safe in isolation but let tests in different modules race on the
+/// same env vars when run in parallel.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-pub struct HomeEnvGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
-    previous: Option<String>,
+/// Sets env vars for the duration of a test, restoring the previous values
+/// (or absence) on drop. Holds the global env lock the whole time.
+pub struct EnvVarsGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous: Vec<(String, Option<String>)>,
 }
 
-impl HomeEnvGuard {
-    pub fn set(path: &std::path::Path) -> Self {
-        let lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", path) };
-        HomeEnvGuard {
+impl EnvVarsGuard {
+    pub fn set(vars: &[(&str, &str)]) -> Self {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = vars
+            .iter()
+            .map(|(name, value)| {
+                let old = std::env::var(name).ok();
+                unsafe { std::env::set_var(name, value) };
+                (name.to_string(), old)
+            })
+            .collect();
+        EnvVarsGuard {
             _lock: lock,
             previous,
         }
     }
 }
 
-impl Drop for HomeEnvGuard {
+impl Drop for EnvVarsGuard {
     fn drop(&mut self) {
-        match &self.previous {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
+        for (name, old) in &self.previous {
+            match old {
+                Some(v) => unsafe { std::env::set_var(name, v) },
+                None => unsafe { std::env::remove_var(name) },
+            }
         }
+    }
+}
+
+pub struct HomeEnvGuard(#[allow(dead_code)] EnvVarsGuard);
+
+impl HomeEnvGuard {
+    pub fn set(path: &std::path::Path) -> Self {
+        HomeEnvGuard(EnvVarsGuard::set(&[("HOME", path.to_str().unwrap())]))
     }
 }

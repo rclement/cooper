@@ -158,6 +158,23 @@ mod tests {
     }
 
     #[test]
+    fn list_ignores_files_that_are_not_session_records() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _guard = HomeEnvGuard::set(tmp_home.path());
+
+        let session = SessionRecord::new("openai".to_string(), "gpt-4".to_string());
+        save(&session).unwrap();
+        let dir = tmp_home.path().join(".cooper/sessions");
+        std::fs::write(dir.join("notes.txt"), "not a session").unwrap();
+        std::fs::write(dir.join("corrupt.json"), "{ not json").unwrap();
+
+        let sessions = list().unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session.id);
+    }
+
+    #[test]
     fn touch_updates_updated_at() {
         let mut session = SessionRecord::new("openai".to_string(), "gpt-4".to_string());
         session.updated_at = 0;

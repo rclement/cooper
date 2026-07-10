@@ -16,6 +16,7 @@ dependencies = [
  "axum",
  "clap",
  "cooper-core",
+ "cooper-mock-server",
  "dirs",
  "dotenvy",
  "reqwest",
