@@ -22,8 +22,17 @@ fn main() {
     // leave it missing and never get rebuilt.
     println!("cargo:rerun-if-changed=web/www/pkg/cooper_web.js");
     println!("cargo:rerun-if-env-changed=COOPER_SKIP_WASM_BUILD");
+    println!("cargo:rerun-if-env-changed=CARGO_LLVM_COV");
 
     if std::env::var_os("COOPER_SKIP_WASM_BUILD").is_some() {
+        return;
+    }
+
+    // Under `cargo llvm-cov`, RUSTFLAGS carry `-C instrument-coverage`,
+    // which leaks into the nested wasm-pack build and fails to link (there
+    // is no profiler runtime for wasm32) — and coverage runs never serve
+    // the web app anyway.
+    if std::env::var_os("CARGO_LLVM_COV").is_some() {
         return;
     }
 

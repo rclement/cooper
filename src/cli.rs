@@ -643,6 +643,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_session_age_the_way_a_human_scans_a_list() {
+        let now = 1_000_000_000;
+        let seconds = 1000;
+
+        assert_eq!(format_relative(now, now - 30 * seconds), "just now");
+        assert_eq!(format_relative(now, now - 5 * 60 * seconds), "5m ago");
+        assert_eq!(format_relative(now, now - 3 * 3600 * seconds), "3h ago");
+        assert_eq!(format_relative(now, now - 48 * 3600 * seconds), "2d ago");
+    }
+
+    #[test]
+    fn a_session_saved_in_the_future_still_reads_as_just_now() {
+        assert_eq!(format_relative(1000, 2000), "just now");
+    }
+
+    #[test]
     fn formats_timing_line_from_whichever_phases_were_measured() {
         assert_eq!(
             format_timing(Some(1200), Some(800)),

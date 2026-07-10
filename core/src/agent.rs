@@ -391,6 +391,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_loop_stream_rejects_a_broken_template_before_calling_the_provider() {
+        let provider = MockProvider::new(vec![]);
+        let handler = SpyHandler::default();
+        let mut messages = Vec::new();
+
+        let result = agent_loop_stream(
+            &mut messages,
+            "hello",
+            Some("{% unknown_tag %}".to_string()),
+            None,
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+            &provider,
+            &handler,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
     async fn agent_loop_stream_stops_on_first_response() {
         let provider = MockProvider::new(vec![Box::new(|_handler| {
             Ok((assistant_text("done"), FinishReason::Stop))

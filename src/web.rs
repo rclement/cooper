@@ -14,6 +14,7 @@
 //!   no stale-wasm hunting after `wasm-pack build` (worker module imports
 //!   are otherwise cached aggressively, notably by Firefox).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use axum::Json;
@@ -29,6 +30,32 @@ fn static_header(name: HeaderName, value: &'static str) -> SetResponseHeaderLaye
     SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))
 }
 
+/// Where forwarded requests go. Production talks to the real internet
+/// (`https` git hosts, GitHub's token endpoint); tests substitute local
+/// plain-HTTP upstreams so upstream behavior can be scripted. A provider
+/// appears in `oauth_token_urls` when the server knows where its
+/// code-for-token exchange lives — adding one entry here (plus the
+/// browser's `GIT_PROVIDERS`) is all that's needed to support it.
+#[derive(Clone)]
+struct Upstreams {
+    client: reqwest::Client,
+    git_scheme: &'static str,
+    oauth_token_urls: HashMap<&'static str, String>,
+}
+
+impl Upstreams {
+    fn real() -> Self {
+        Upstreams {
+            client: reqwest::Client::new(),
+            git_scheme: "https",
+            oauth_token_urls: HashMap::from([(
+                "github",
+                "https://github.com/login/oauth/access_token".to_string(),
+            )]),
+        }
+    }
+}
+
 /// Only proxy git smart-HTTP endpoints (same restriction as isomorphic-git's
 /// own cors-proxy) so this doesn't double as an open proxy to arbitrary URLs.
 fn is_git_request(path: &str, query: Option<&str>) -> bool {
@@ -41,7 +68,7 @@ fn is_git_request(path: &str, query: Option<&str>) -> bool {
 /// both bodies. The browser talks same-origin, so no CORS dance is needed;
 /// hop-by-hop and browser-identity headers are stripped before forwarding.
 async fn git_proxy(
-    State(client): State<reqwest::Client>,
+    State(upstreams): State<Upstreams>,
     method: Method,
     UrlPath(rest): UrlPath<String>,
     RawQuery(query): RawQuery,
@@ -56,7 +83,7 @@ async fn git_proxy(
             .into_response();
     }
 
-    let mut url = format!("https://{rest}");
+    let mut url = format!("{}://{rest}", upstreams.git_scheme);
     if let Some(q) = &query {
         url.push('?');
         url.push_str(q);
@@ -85,7 +112,8 @@ async fn git_proxy(
         HeaderValue::from_static("git/cooper-proxy"),
     );
 
-    let upstream = match client
+    let upstream = match upstreams
+        .client
         .request(method, &url)
         .headers(forwarded)
         .body(body)
@@ -124,16 +152,6 @@ async fn git_proxy(
 // provider is "configured" when both are set. Tokens are returned to the
 // browser and never stored server-side.
 
-/// Known providers and where their code-for-token exchange lives. Adding a
-/// provider here (plus its entry in the browser's `GIT_PROVIDERS`) is all
-/// that's needed to support it.
-fn oauth_token_url(provider: &str) -> Option<&'static str> {
-    match provider {
-        "github" => Some("https://github.com/login/oauth/access_token"),
-        _ => None,
-    }
-}
-
 fn oauth_env_vars(provider: &str) -> (String, String) {
     let prefix = provider.to_uppercase();
     (
@@ -153,9 +171,9 @@ fn oauth_credentials(provider: &str) -> Option<(String, String)> {
 /// `GET /oauth/providers`: which providers this server can complete the
 /// token exchange for, with the public client id the browser needs to build
 /// the authorize URL. Secrets never leave the server.
-async fn oauth_providers() -> Json<serde_json::Value> {
+async fn oauth_providers(State(upstreams): State<Upstreams>) -> Json<serde_json::Value> {
     let mut providers = serde_json::Map::new();
-    for name in ["github"] {
+    for name in upstreams.oauth_token_urls.keys() {
         if let Some((client_id, _)) = oauth_credentials(name) {
             providers.insert(
                 name.to_string(),
@@ -177,11 +195,11 @@ struct TokenExchangeRequest {
 /// relayed verbatim — GitHub reports failures (expired code, bad client)
 /// as a 200 with an `error` field, which the browser handles.
 async fn oauth_token(
-    State(client): State<reqwest::Client>,
+    State(upstreams): State<Upstreams>,
     UrlPath(provider): UrlPath<String>,
     Json(request): Json<TokenExchangeRequest>,
 ) -> Response {
-    let Some(token_url) = oauth_token_url(&provider) else {
+    let Some(token_url) = upstreams.oauth_token_urls.get(provider.as_str()) else {
         return (
             StatusCode::NOT_FOUND,
             format!("unknown provider: {provider}"),
@@ -203,7 +221,8 @@ async fn oauth_token(
         "redirect_uri": request.redirect_uri,
     });
 
-    let upstream = match client
+    let upstream = match upstreams
+        .client
         .post(token_url)
         .header(header::ACCEPT, "application/json")
         .header(header::CONTENT_TYPE, "application/json")
@@ -234,6 +253,32 @@ fn resolve_web_dir(dir: Option<PathBuf>) -> PathBuf {
     dir.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("web"))
 }
 
+fn app(web_dir: &Path, upstreams: Upstreams) -> axum::Router {
+    axum::Router::new()
+        // Bare probe used by the web app to detect the same-origin proxy.
+        .route("/git-proxy", any(|| async { StatusCode::NO_CONTENT }))
+        .route("/git-proxy/{*rest}", any(git_proxy))
+        .route("/oauth/providers", get(oauth_providers))
+        .route("/oauth/{provider}/token", post(oauth_token))
+        .with_state(upstreams)
+        // The app lives at the root (`/` serves www/index.html — ServeDir
+        // appends index.html on directory requests; www/ is self-contained,
+        // wasm pkg included). The legacy `/www/*` mount keeps pre-existing
+        // deep links working — notably OAuth callback URLs registered as
+        // /www/oauth-callback.html.
+        .nest_service("/www", ServeDir::new(web_dir.join("www")))
+        .fallback_service(ServeDir::new(web_dir.join("www")))
+        .layer(static_header(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            "same-origin",
+        ))
+        .layer(static_header(
+            HeaderName::from_static("cross-origin-embedder-policy"),
+            "require-corp",
+        ))
+        .layer(static_header(header::CACHE_CONTROL, "no-store"))
+}
+
 pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
     let web_dir = resolve_web_dir(dir);
 
@@ -252,30 +297,7 @@ pub async fn web_cmd(port: u16, dir: Option<PathBuf>) {
         std::process::exit(1);
     }
 
-    let client = reqwest::Client::new();
-    let app = axum::Router::new()
-        // Bare probe used by the web app to detect the same-origin proxy.
-        .route("/git-proxy", any(|| async { StatusCode::NO_CONTENT }))
-        .route("/git-proxy/{*rest}", any(git_proxy))
-        .route("/oauth/providers", get(oauth_providers))
-        .route("/oauth/{provider}/token", post(oauth_token))
-        .with_state(client)
-        // The app lives at the root (`/` serves www/index.html — ServeDir
-        // appends index.html on directory requests; www/ is self-contained,
-        // wasm pkg included). The legacy `/www/*` mount keeps pre-existing
-        // deep links working — notably OAuth callback URLs registered as
-        // /www/oauth-callback.html.
-        .nest_service("/www", ServeDir::new(web_dir.join("www")))
-        .fallback_service(ServeDir::new(web_dir.join("www")))
-        .layer(static_header(
-            HeaderName::from_static("cross-origin-opener-policy"),
-            "same-origin",
-        ))
-        .layer(static_header(
-            HeaderName::from_static("cross-origin-embedder-policy"),
-            "require-corp",
-        ))
-        .layer(static_header(header::CACHE_CONTROL, "no-store"));
+    let app = app(&web_dir, Upstreams::real());
 
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
@@ -343,9 +365,10 @@ mod tests {
 
     #[test]
     fn only_known_providers_have_token_urls() {
-        assert!(oauth_token_url("github").is_some());
-        assert!(oauth_token_url("bitbucket").is_none());
-        assert!(oauth_token_url("").is_none());
+        let urls = Upstreams::real().oauth_token_urls;
+
+        assert!(urls.contains_key("github"));
+        assert!(!urls.contains_key("bitbucket"));
     }
 
     #[test]
@@ -356,5 +379,278 @@ mod tests {
             resolve_web_dir(None),
             Path::new(env!("CARGO_MANIFEST_DIR")).join("web")
         );
+    }
+
+    // ---------- Serving the routes for real ----------
+    //
+    // These tests bind the actual router on a loopback port and script the
+    // *upstream* side (the git host, GitHub's token endpoint) with local
+    // plain-HTTP servers, so the full forwarding behavior — what gets
+    // stripped, what gets added, what gets relayed back — is observable.
+
+    use std::sync::{Arc, Mutex};
+
+    use crate::test_support::EnvVarsGuard;
+
+    /// Binds `router` on a random loopback port; returns its `host:port`.
+    async fn serve(router: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        addr.to_string()
+    }
+
+    /// One request as the scripted upstream saw it.
+    #[derive(Clone)]
+    struct SeenRequest {
+        headers: HeaderMap,
+        body: String,
+    }
+
+    type Seen = Arc<Mutex<Vec<SeenRequest>>>;
+
+    /// An upstream that records every request and answers `response_body`
+    /// with the given content type.
+    async fn scripted_upstream(
+        content_type: &'static str,
+        response_body: &'static str,
+    ) -> (String, Seen) {
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let router = axum::Router::new().route(
+            "/{*rest}",
+            any(move |headers: HeaderMap, body: Bytes| {
+                let recorded = recorded.clone();
+                async move {
+                    recorded.lock().unwrap().push(SeenRequest {
+                        headers,
+                        body: String::from_utf8_lossy(&body).into_owned(),
+                    });
+                    ([(header::CONTENT_TYPE, content_type)], response_body)
+                }
+            }),
+        );
+        (serve(router).await, seen)
+    }
+
+    /// The router under test, with upstreams pointed at plain HTTP and
+    /// GitHub's token endpoint replaced by `token_url`.
+    async fn serve_app(token_url: &str) -> String {
+        let upstreams = Upstreams {
+            client: reqwest::Client::new(),
+            git_scheme: "http",
+            oauth_token_urls: HashMap::from([("github", token_url.to_string())]),
+        };
+        serve(app(Path::new("/nonexistent-web-dir"), upstreams)).await
+    }
+
+    #[tokio::test]
+    async fn git_proxy_relays_a_clone_handshake_and_its_response() {
+        let (upstream, _) = scripted_upstream(
+            "application/x-git-upload-pack-advertisement",
+            "refs-payload",
+        )
+        .await;
+        let proxy = serve_app("http://unused").await;
+
+        let response = reqwest::get(format!(
+            "http://{proxy}/git-proxy/{upstream}/owner/repo.git/info/refs?service=git-upload-pack"
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-git-upload-pack-advertisement"
+        );
+        assert_eq!(response.text().await.unwrap(), "refs-payload");
+    }
+
+    #[tokio::test]
+    async fn git_proxy_speaks_as_git_not_as_the_browser() {
+        let (upstream, seen) =
+            scripted_upstream("application/x-git-upload-pack-result", "pack").await;
+        let proxy = serve_app("http://unused").await;
+
+        reqwest::Client::new()
+            .post(format!(
+                "http://{proxy}/git-proxy/{upstream}/owner/repo.git/git-upload-pack"
+            ))
+            .header("cookie", "session=browser-secret")
+            .header("origin", "http://127.0.0.1:8080")
+            .header("sec-fetch-mode", "cors")
+            .header("authorization", "Basic Z2l0OnRva2Vu")
+            .body("0000want")
+            .send()
+            .await
+            .unwrap();
+
+        let request = seen.lock().unwrap()[0].clone();
+        assert!(request.headers.get("cookie").is_none());
+        assert!(request.headers.get("origin").is_none());
+        assert!(request.headers.get("sec-fetch-mode").is_none());
+        assert_eq!(request.headers["user-agent"], "git/cooper-proxy");
+        assert_eq!(request.headers["authorization"], "Basic Z2l0OnRva2Vu");
+        assert_eq!(request.body, "0000want");
+    }
+
+    #[tokio::test]
+    async fn git_proxy_refuses_to_be_an_open_proxy() {
+        let proxy = serve_app("http://unused").await;
+
+        let response = reqwest::get(format!("http://{proxy}/git-proxy/example.com/anything"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn git_proxy_reports_an_unreachable_host_as_bad_gateway() {
+        let proxy = serve_app("http://unused").await;
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{proxy}/git-proxy/127.0.0.1:1/owner/repo.git/git-upload-pack"
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn every_response_carries_isolation_and_no_store_headers() {
+        let proxy = serve_app("http://unused").await;
+
+        let response = reqwest::get(format!("http://{proxy}/git-proxy"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()["cross-origin-opener-policy"],
+            "same-origin"
+        );
+        assert_eq!(
+            response.headers()["cross-origin-embedder-policy"],
+            "require-corp"
+        );
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[tokio::test]
+    async fn token_exchange_adds_the_client_secret_server_side() {
+        let (upstream, seen) =
+            scripted_upstream("application/json", r#"{"access_token":"tok-789"}"#).await;
+        let proxy = serve_app(&format!("http://{upstream}/login/oauth/access_token")).await;
+        let _env = EnvVarsGuard::set(&[
+            ("GITHUB_CLIENT_ID", "id-123"),
+            ("GITHUB_CLIENT_SECRET", "sec-456"),
+        ]);
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{proxy}/oauth/github/token"))
+            .json(&serde_json::json!({ "code": "abc", "redirect_uri": "http://cb" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.text().await.unwrap(),
+            r#"{"access_token":"tok-789"}"#
+        );
+        let request = seen.lock().unwrap()[0].clone();
+        assert!(request.body.contains("\"code\":\"abc\""));
+        assert!(request.body.contains("\"client_id\":\"id-123\""));
+        assert!(request.body.contains("\"client_secret\":\"sec-456\""));
+    }
+
+    #[tokio::test]
+    async fn token_exchange_rejects_unknown_providers() {
+        let proxy = serve_app("http://unused").await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{proxy}/oauth/bitbucket/token"))
+            .json(&serde_json::json!({ "code": "abc" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn token_exchange_rejects_providers_without_credentials() {
+        let proxy = serve_app("http://unused").await;
+        let _env = EnvVarsGuard::set(&[("GITHUB_CLIENT_ID", ""), ("GITHUB_CLIENT_SECRET", "")]);
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{proxy}/oauth/github/token"))
+            .json(&serde_json::json!({ "code": "abc" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn token_exchange_reports_an_unreachable_endpoint_as_bad_gateway() {
+        let proxy = serve_app("http://127.0.0.1:1/token").await;
+        let _env = EnvVarsGuard::set(&[
+            ("GITHUB_CLIENT_ID", "id-123"),
+            ("GITHUB_CLIENT_SECRET", "sec-456"),
+        ]);
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{proxy}/oauth/github/token"))
+            .json(&serde_json::json!({ "code": "abc" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn configured_providers_are_advertised_with_their_public_id_only() {
+        let proxy = serve_app("http://unused").await;
+        let _env = EnvVarsGuard::set(&[
+            ("GITHUB_CLIENT_ID", "id-123"),
+            ("GITHUB_CLIENT_SECRET", "sec-456"),
+        ]);
+
+        let body = reqwest::get(format!("http://{proxy}/oauth/providers"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert!(body.contains(r#""client_id":"id-123""#));
+        assert!(!body.contains("sec-456"));
+    }
+
+    #[tokio::test]
+    async fn unconfigured_providers_are_not_advertised() {
+        let proxy = serve_app("http://unused").await;
+        let _env = EnvVarsGuard::set(&[("GITHUB_CLIENT_ID", ""), ("GITHUB_CLIENT_SECRET", "")]);
+
+        let body = reqwest::get(format!("http://{proxy}/oauth/providers"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert_eq!(body, "{}");
     }
 }
