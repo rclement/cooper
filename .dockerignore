@@ -1,0 +1,10 @@
+*
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!src
+!core
+!web
+!mock-server
+!e2e
+web/www/pkg

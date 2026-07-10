@@ -1,0 +1,40 @@
+name: Preview cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+    steps:
+      - name: Delete the PR's Vercel and GitHub deployments
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENV_NAME: preview-pr-${{ github.event.number }}
+        run: |
+          for id in $(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=$ENV_NAME" --jq '.[].id'); do
+            url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+              --jq '[.[] | select(.environment_url != null and .environment_url != "")][0].environment_url // empty')
+            if [ -n "$url" ]; then
+              echo "removing vercel deployment $url"
+              npx vercel@latest remove "$url" --yes --token "$VERCEL_TOKEN" \
+                || echo "already gone: $url"
+            fi
+            gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+              -f state=inactive >/dev/null
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/deployments/$id"
+          done
+
+      - name: Delete the GitHub environment
+        env:
+          GH_TOKEN: ${{ secrets.GH_PERSONAL_TOKEN || secrets.GITHUB_TOKEN }}
+          ENV_NAME: preview-pr-${{ github.event.number }}
+        run: |
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/environments/$ENV_NAME" \
+            || echo "environment entry left in settings (needs an admin token to remove)"
