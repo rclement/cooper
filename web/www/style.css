@@ -26,6 +26,57 @@ body {
   min-height: 100vh;
 }
 
+body.no-scroll {
+  overflow: hidden;
+}
+
+/* Mobile topbar + scrim + drawer chrome — inert on desktop, activated by
+   the `48rem` media query further down. */
+.mobile-topbar {
+  display: none;
+}
+
+.icon-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 0.4em;
+  border-radius: 0.5em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-toggle-btn:hover {
+  background: var(--surface);
+  opacity: 1;
+}
+
+.icon-toggle-btn svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.sidebar-drawer-header {
+  display: none;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 6, 8, 0.55);
+  z-index: 40;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.scrim[hidden] {
+  display: none;
+}
+
+.context-panel-handle {
+  display: none;
+}
+
 .sidebar {
   width: 15rem;
   flex-shrink: 0;
@@ -312,9 +363,9 @@ body {
   transform: rotate(180deg);
 }
 
-.session-layout.context-collapsed .context-panel {
-  display: none;
-}
+/* display:none is scoped to desktop below (min-width: 48.01rem) — on
+   mobile the panel becomes a bottom sheet whose own transform handles
+   showing/hiding it instead. */
 
 .context-section {
   border: 1px solid var(--border);
@@ -2007,81 +2058,207 @@ details:not([open]) > .block-body {
   }
 }
 
-@media (max-width: 60rem) {
-  /* Narrow screens go back to a flowing page: a fixed-height chat column
-     with the panel stacked below it would bury the panel off-screen. */
-  .session-layout {
-    flex-direction: column;
-    height: auto;
+/* ---------- Mobile (<=48rem): drawer nav + bottom-sheet context ---------- */
+
+@media (max-width: 48rem) {
+  :root {
+    --topbar-h: 3.25rem;
   }
 
-  .session-main {
-    height: auto;
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: var(--topbar-h);
+    padding: 0 0.5rem 0 0.25rem;
+    padding-top: env(safe-area-inset-top);
+    height: calc(var(--topbar-h) + env(safe-area-inset-top));
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
   }
 
-  .timeline {
-    overflow-y: visible;
-    min-height: unset;
+  .mobile-topbar-brand {
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
   }
 
-  .context-panel {
-    width: 100%;
-    position: static;
-    max-height: none;
-    overflow-y: visible;
-  }
-
-  .context-toggle {
-    position: static;
-    margin-left: 0;
-  }
-}
-
-@media (max-width: 40rem) {
-  .config,
-  .provider-fields {
-    grid-template-columns: 1fr;
-  }
-  .add-provider-form {
-    grid-template-columns: 1fr;
+  .mobile-topbar-spacer {
+    flex: 1;
   }
 
   .app {
     flex-direction: column;
+    min-height: 0;
   }
+
+  /* --- Left nav becomes an off-canvas drawer --- */
 
   .sidebar {
-    width: auto;
-    flex-direction: row;
+    position: fixed;
+    inset: 0 auto 0 0;
+    top: 0;
+    height: 100%;
+    height: 100dvh;
+    width: min(20rem, 85vw);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+    padding: 1rem;
+    padding-top: calc(1rem + env(safe-area-inset-top));
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-drawer-header {
+    display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    padding: 0.75rem 1rem;
-    height: auto;
-    position: static;
+    justify-content: space-between;
+    margin-bottom: 1rem;
   }
 
-  .sidebar-sessions {
-    flex-basis: 100%;
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
-  }
-
-  .session-list {
-    max-height: 10rem;
-  }
-
-  .brand {
+  .sidebar-drawer-header .brand {
     margin-bottom: 0;
-    margin-right: 0.5rem;
-  }
-
-  .nav-item span {
-    display: none;
   }
 
   .content {
-    padding: 1.5rem 1.25rem 3rem;
+    padding: 1.25rem 1rem 1rem;
+  }
+
+  .content:has(#view-sessions.is-active),
+  .content:has(#view-workspace.is-active) {
+    padding-bottom: 0.75rem;
+  }
+
+  .view {
+    max-width: none;
+  }
+
+  /* --- Sessions view: full-height chat column, panel becomes a sheet --- */
+
+  .session-layout {
+    height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - 1.5rem);
+    gap: 0;
+  }
+
+  .session-main {
+    gap: 0.75rem;
+  }
+
+  .row {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+    padding-right: 3.5rem;
+  }
+
+  #repo-attach {
+    margin-left: 0;
+  }
+
+  .model-indicator {
+    max-width: 100%;
+  }
+
+  .context-toggle {
+    position: fixed;
+    top: auto;
+    bottom: calc(1.1rem + env(safe-area-inset-bottom));
+    right: 1.1rem;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #06120d;
+    border: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 35;
+    margin-left: 0;
+  }
+
+  .context-toggle svg {
+    width: 1.2rem;
+    height: 1.2rem;
+  }
+
+  .session-layout.context-collapsed .context-toggle svg {
+    transform: rotate(-90deg);
+  }
+
+  .session-layout.context-open .context-toggle svg {
+    transform: rotate(90deg);
+  }
+
+  .context-panel {
+    position: fixed;
+    inset: auto 0 0 0;
+    width: auto;
+    max-height: 82dvh;
+    top: auto;
+    z-index: 45;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 1rem 1rem 0 0;
+    background: var(--surface);
+    box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.5);
+    padding: 0.5rem 1rem calc(1rem + env(safe-area-inset-bottom));
+    transform: translateY(100%);
+    transition: transform 0.2s ease;
+    /* Always laid out (not display:none) so the transform can animate it
+       in/out; .context-collapsed only governs the desktop display:none
+       rule, scoped away from this breakpoint below. */
+    display: flex !important;
+  }
+
+  .session-layout.context-open .context-panel {
+    transform: translateY(0);
+  }
+
+  .context-panel-handle {
+    display: block;
+    align-self: center;
+    width: 2.5rem;
+    height: 0.3rem;
+    border-radius: 1em;
+    background: var(--border);
+    flex-shrink: 0;
+    margin-bottom: 0.4rem;
+  }
+
+  /* --- Workspace / analytics / settings: simple stacking, no overflow --- */
+
+  #view-workspace {
+    height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - 1.5rem);
+  }
+
+  .ws-toolbar button {
+    flex: 1 1 auto;
+  }
+
+  .config,
+  .provider-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .add-provider-form {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-filters .field {
+    flex: 1 1 12rem;
+  }
+}
+
+/* The desktop collapse rule (display:none) only applies above the mobile
+   breakpoint — on mobile the sheet's own transform handles hide/show. */
+@media (min-width: 48.01rem) {
+  .session-layout.context-collapsed .context-panel {
+    display: none;
   }
 }
