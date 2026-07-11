@@ -59,6 +59,21 @@ initContext();
 initWorkspace();
 initAnalytics();
 
+// Mobile: the left nav + session list live in an off-canvas drawer, and the
+// context panel becomes a bottom sheet — both share one dimmed scrim behind
+// them (only one is ever open at a time) and lock page scroll while open.
+const isMobile = () => window.matchMedia("(max-width: 48rem)").matches;
+
+function setSidebarOpen(open) {
+  $("app-sidebar").classList.toggle("is-open", open);
+  $("sidebar-toggle").setAttribute("aria-expanded", String(open));
+  $("scrim").hidden = !(open || document.querySelector(".session-layout").classList.contains("context-open"));
+  document.body.classList.toggle("no-scroll", open);
+}
+
+$("sidebar-toggle").addEventListener("click", () => setSidebarOpen(true));
+$("sidebar-close").addEventListener("click", () => setSidebarOpen(false));
+
 for (const navItem of document.querySelectorAll(".nav-item")) {
   navItem.addEventListener("click", () => {
     for (const item of document.querySelectorAll(".nav-item")) {
@@ -69,15 +84,25 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
     }
     if (navItem.dataset.view === "workspace") refreshWorkspace();
     if (navItem.dataset.view === "analytics") refreshAnalytics();
+    if (isMobile()) setSidebarOpen(false);
   });
 }
 
-// Context panel collapse — persisted so the choice survives reloads.
+// Context panel: on desktop a collapsible sidebar column (persisted); on
+// mobile a bottom sheet that always starts closed and isn't persisted, so a
+// narrow-viewport visit never opens on top of the chat unannounced.
 function setContextCollapsed(collapsed) {
-  document.querySelector(".session-layout").classList.toggle("context-collapsed", collapsed);
+  const mobile = isMobile();
+  const layout = document.querySelector(".session-layout");
+  layout.classList.toggle("context-collapsed", collapsed);
+  layout.classList.toggle("context-open", mobile && !collapsed);
   $("context-toggle").title = collapsed ? "Show context panel" : "Hide context panel";
   $("context-toggle").setAttribute("aria-expanded", String(!collapsed));
-  localStorage.setItem("cooper-context-collapsed", collapsed ? "1" : "0");
+  if (!mobile) localStorage.setItem("cooper-context-collapsed", collapsed ? "1" : "0");
+  if (mobile) {
+    $("scrim").hidden = !(!collapsed || $("app-sidebar").classList.contains("is-open"));
+    document.body.classList.toggle("no-scroll", !collapsed);
+  }
 }
 
 $("context-toggle").addEventListener("click", () => {
@@ -86,7 +111,16 @@ $("context-toggle").addEventListener("click", () => {
   );
 });
 
-if (localStorage.getItem("cooper-context-collapsed") === "1") setContextCollapsed(true);
+$("scrim").addEventListener("click", () => {
+  setSidebarOpen(false);
+  setContextCollapsed(true);
+});
+
+if (isMobile()) {
+  setContextCollapsed(true);
+} else if (localStorage.getItem("cooper-context-collapsed") === "1") {
+  setContextCollapsed(true);
+}
 
 // The pill shows the active provider/model; the selects live in the context
 // panel, so clicking it opens the panel at that section.
