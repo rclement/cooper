@@ -283,6 +283,45 @@ function renderLocalModelTag(model, { removable, isDefaultProvider, tags }) {
   tags.appendChild(tag);
 }
 
+// Cached across renders so the (async) check only ever runs once per page
+// load — `renderLocalProviderBlock` reruns on every settings change and
+// would otherwise re-query the GPU on each keystroke.
+let webgpuSupportPromise = null;
+
+// `navigator.gpu` merely means the API exists; requesting an adapter is what
+// actually tells us whether wllama will be able to offload to it (mirrors
+// the check wllama itself does before enabling its WebGPU backend).
+function detectWebGpuSupport() {
+  if (typeof navigator === "undefined" || !navigator.gpu) {
+    return Promise.resolve(false);
+  }
+  return navigator.gpu
+    .requestAdapter()
+    .then((adapter) => !!adapter)
+    .catch(() => false);
+}
+
+function getWebGpuSupport() {
+  if (!webgpuSupportPromise) webgpuSupportPromise = detectWebGpuSupport();
+  return webgpuSupportPromise;
+}
+
+function renderGpuBadge() {
+  const badge = document.createElement("span");
+  badge.className = "badge badge-pending";
+  badge.textContent = "checking GPU…";
+  getWebGpuSupport().then((supported) => {
+    badge.className = supported ? "badge" : "badge badge-dim";
+    badge.textContent = supported
+      ? "⚡ GPU offloading supported"
+      : "CPU only — WebGPU unavailable";
+    badge.title = supported
+      ? "wllama can offload model layers to your GPU via WebGPU."
+      : "This browser has no usable WebGPU adapter — local models will run on CPU only, which is much slower.";
+  });
+  return badge;
+}
+
 function renderLocalProviderBlock() {
   const container = $("local-provider");
   if (!container) return;
@@ -296,7 +335,7 @@ function renderLocalProviderBlock() {
   const name = document.createElement("span");
   name.className = "provider-name";
   name.textContent = LOCAL_PROVIDER_NAME;
-  header.appendChild(name);
+  header.append(name, renderGpuBadge());
 
   const hint = document.createElement("p");
   hint.className = "hint";

@@ -66,6 +66,12 @@ body {
   max-width: 38rem;
 }
 
+.badge-pending,
+.badge-dim {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
 .nav-item {
   display: flex;
   align-items: center;
