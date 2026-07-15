@@ -57,7 +57,9 @@ body.no-scroll {
   height: 1.3rem;
 }
 
-.sidebar-drawer-header {
+.sidebar-drawer-header,
+.ws-sidebar-drawer-header,
+.ws-btn-folders {
   display: none;
 }
 
@@ -2231,7 +2233,9 @@ details:not([open]) > .block-body {
     margin-bottom: 0.4rem;
   }
 
-  /* --- Workspace / analytics / settings: simple stacking, no overflow --- */
+  /* --- Workspace: folder tree + storage become an off-canvas drawer, so
+     the breadcrumb + file table (the actual work surface) get the full
+     width instead of fighting a stacked tree/storage block above them. --- */
 
   #view-workspace {
     height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - 1.5rem);
@@ -2239,6 +2243,77 @@ details:not([open]) > .block-body {
 
   .ws-toolbar button {
     flex: 1 1 auto;
+  }
+
+  .ws-btn-folders {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+  }
+
+  .ws-btn-folders svg {
+    width: 1.1em;
+    height: 1.1em;
+  }
+
+  .ws-body {
+    border: none;
+    background: none;
+  }
+
+  .ws-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    top: 0;
+    height: 100dvh;
+    width: min(20rem, 85vw);
+    max-height: none;
+    z-index: 48;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+    background: var(--surface);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .ws-sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  .ws-sidebar-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.9rem 1rem 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .ws-content {
+    padding: 0.25rem 0;
+  }
+
+  /* Type/Modified add clutter at this width — Name, Size and Actions carry
+     the workflow (open/edit/rename/delete); the rest is one tap away. */
+  .ws-table th:nth-child(2),
+  .ws-table td:nth-child(2),
+  .ws-table th:nth-child(4),
+  .ws-table td:nth-child(4) {
+    display: none;
+  }
+
+  .ws-row-actions {
+    white-space: normal;
+  }
+
+  .ws-row-actions button {
+    margin-bottom: 0.3em;
   }
 
   .config,
