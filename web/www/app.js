@@ -59,20 +59,41 @@ initContext();
 initWorkspace();
 initAnalytics();
 
-// Mobile: the left nav + session list live in an off-canvas drawer, and the
-// context panel becomes a bottom sheet — both share one dimmed scrim behind
-// them (only one is ever open at a time) and lock page scroll while open.
+// Mobile: the left nav + session list and the workspace folder tree live in
+// off-canvas drawers, and the context panel becomes a bottom sheet — all
+// three share one dimmed scrim behind them (only one is ever open at a
+// time) and lock page scroll while open.
 const isMobile = () => window.matchMedia("(max-width: 48rem)").matches;
+
+function anyDrawerOpen() {
+  return (
+    $("app-sidebar").classList.contains("is-open") ||
+    $("ws-sidebar").classList.contains("is-open") ||
+    document.querySelector(".session-layout").classList.contains("context-open")
+  );
+}
+
+function syncScrim() {
+  const open = anyDrawerOpen();
+  $("scrim").hidden = !open;
+  document.body.classList.toggle("no-scroll", open);
+}
 
 function setSidebarOpen(open) {
   $("app-sidebar").classList.toggle("is-open", open);
   $("sidebar-toggle").setAttribute("aria-expanded", String(open));
-  $("scrim").hidden = !(open || document.querySelector(".session-layout").classList.contains("context-open"));
-  document.body.classList.toggle("no-scroll", open);
+  syncScrim();
+}
+
+function setWsSidebarOpen(open) {
+  $("ws-sidebar").classList.toggle("is-open", open);
+  syncScrim();
 }
 
 $("sidebar-toggle").addEventListener("click", () => setSidebarOpen(true));
 $("sidebar-close").addEventListener("click", () => setSidebarOpen(false));
+$("ws-btn-folders").addEventListener("click", () => setWsSidebarOpen(true));
+$("ws-sidebar-close").addEventListener("click", () => setWsSidebarOpen(false));
 
 for (const navItem of document.querySelectorAll(".nav-item")) {
   navItem.addEventListener("click", () => {
@@ -99,10 +120,7 @@ function setContextCollapsed(collapsed) {
   $("context-toggle").title = collapsed ? "Show context panel" : "Hide context panel";
   $("context-toggle").setAttribute("aria-expanded", String(!collapsed));
   if (!mobile) localStorage.setItem("cooper-context-collapsed", collapsed ? "1" : "0");
-  if (mobile) {
-    $("scrim").hidden = !(!collapsed || $("app-sidebar").classList.contains("is-open"));
-    document.body.classList.toggle("no-scroll", !collapsed);
-  }
+  if (mobile) syncScrim();
 }
 
 $("context-toggle").addEventListener("click", () => {
@@ -113,6 +131,7 @@ $("context-toggle").addEventListener("click", () => {
 
 $("scrim").addEventListener("click", () => {
   setSidebarOpen(false);
+  setWsSidebarOpen(false);
   setContextCollapsed(true);
 });
 

@@ -181,6 +181,10 @@
 
           <div class="ws-app">
             <div class="ws-toolbar">
+              <button id="ws-btn-folders" type="button" class="secondary ws-btn-folders">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>
+                Folders
+              </button>
               <button id="ws-btn-new-file" type="button" class="secondary">New File</button>
               <button id="ws-btn-new-folder" type="button" class="secondary">New Folder</button>
               <button id="ws-btn-upload" type="button" class="secondary">Upload</button>
@@ -191,7 +195,13 @@
             </div>
 
             <div class="ws-body">
-              <aside class="ws-sidebar">
+              <aside class="ws-sidebar" id="ws-sidebar">
+                <div class="ws-sidebar-drawer-header">
+                  <span>Folders</span>
+                  <button id="ws-sidebar-close" type="button" class="icon-toggle-btn" aria-label="Close folders panel">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                  </button>
+                </div>
                 <div class="ws-tree-container">
                   <ul id="ws-tree-root" class="ws-tree"></ul>
                 </div>
