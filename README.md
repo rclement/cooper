@@ -2,10 +2,13 @@
 
 > *...damn good agent*
 
-<img src="docs/screenshots/agent-run.png" alt="Cooper web app: an agent run with reasoning, a run_python tool call executed by Pyodide in the browser, and the final response" width="100%">
+🔗 **Live demo:** [agent-cooper.vercel.app](https://agent-cooper.vercel.app)
+
+<img src="docs/screenshots/about.png" alt="Cooper web app: the About landing page explaining client-side execution, sandboxed tools, and local/hosted model support" width="100%">
 <p>
-  <img src="docs/screenshots/chart.png" alt="An inline chart rendered client-side from a render_chart tool call" width="49%">
-  <img src="docs/screenshots/settings.png" alt="Settings: provider management and the local in-browser model catalog" width="49%">
+  <img src="docs/screenshots/agent-run.png" alt="Cooper web app: an agent run with reasoning, a run_python tool call executed by Pyodide in the browser, and the final response" width="32%">
+  <img src="docs/screenshots/chart.png" alt="An inline chart rendered client-side from a render_chart tool call" width="32%">
+  <img src="docs/screenshots/settings.png" alt="Settings: provider management and the local in-browser model catalog" width="32%">
 </p>
 
 A minimal Rust AI agent harness with tool-calling support, built around a
@@ -18,6 +21,37 @@ target-agnostic core ([core/](core/)) that ships in two forms:
 
 The two share the agent core (loop, providers, tool traits) but differ in
 features: each side registers its own tools and manages its own configuration.
+
+## Why Cooper
+
+The web app's main differentiators, in the order they're pitched on its own
+[About page](web/www/index.html):
+
+- **The agentic loop runs client-side** — the reasoning/tool-call loop
+  itself is Rust compiled to WebAssembly and executes in your browser, not
+  on a server. There's no backend orchestrating your session.
+- **Tools run client-side, sandboxed** — file access goes through OPFS (a
+  private, sandboxed filesystem), Python runs in Pyodide, SQL runs in
+  DuckDB-Wasm, and git clone / URL fetch happen from the browser. Nothing
+  touches your real filesystem, and nothing executes with host privileges.
+- **Bring any OpenAI-compatible provider** — hosted or self-hosted, with
+  your own base URL and API key — **or skip providers entirely** and run a
+  GGUF model fully in-browser via [wllama](https://github.com/ngxson/wllama)
+  (WASM, accelerated by WebGPU when available): no API key, no network
+  call, ever.
+- **Tune every part of the prompt** — override the system prompt template,
+  add persistent agent instructions, attach context files, and choose
+  exactly which tools are active, per session.
+- **Clone and work with git repositories** — `git_clone` reaches public
+  repos out of the box; connect a GitHub account (OAuth) to clone and work
+  with private ones too, with a real working directory rather than pasted
+  snippets.
+
+Two threads run through all of it: **privacy**, because the agent loop and
+its tools execute client-side, so prompts, code, and files never have to
+leave the browser unless you explicitly choose a hosted provider; and
+**security**, because every tool call is sandboxed by construction and none
+of it can reach your host OS.
 
 ## Web app
 
