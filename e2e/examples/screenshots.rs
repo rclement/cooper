@@ -58,6 +58,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let browser_handle = launch_browser().await?;
     let browser = &browser_handle.browser;
 
+    // --- 0. About: the landing view a fresh visit lands on ---
+    let mock_server = start_mock_server(MockFixture::File("simple_reply.yaml")).await?;
+    let page = open_app(browser, &static_server.base_url, &mock_server.base_url, &[]).await?;
+    set_viewport(&page).await?;
+    page.evaluate("document.querySelector('.nav-item[data-view=\"about\"]').click()")
+        .await?;
+    save(&page, &out_dir.join("about.png")).await?;
+    drop(mock_server);
+
     // --- 1. Agent run: reasoning + run_python (real Pyodide) + response ---
     let fixture = r#"
 responses:

@@ -201,8 +201,15 @@ pub async fn open_app(
         "defaultModel": "mock-model",
     });
 
+    // Every other helper here (`run_prompt`, `get_timeline_blocks`, …) assumes
+    // the Sessions view is already active on load — seed `cooper-visited` so
+    // the app's real first-visit redirect to the About view (see app.js)
+    // doesn't hijack it. Tests that want to exercise the About view navigate
+    // to it explicitly instead of relying on a "fresh browser".
     let mut js = format!(
-        "localStorage.clear(); localStorage.setItem('cooper.settings.v1', {});",
+        "localStorage.clear(); \
+         localStorage.setItem('cooper.settings.v1', {}); \
+         localStorage.setItem('cooper-visited', '1');",
         serde_json::to_string(&settings.to_string())?
     );
     for (key, value) in extra_storage {

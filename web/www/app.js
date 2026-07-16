@@ -16,6 +16,7 @@ import { renderMarkdown } from "./markdown.js";
 import { saveSession, listSessions, deleteSession } from "./sessions.js";
 import { initWorkspace, refreshWorkspace } from "./workspace.js";
 import { initAnalytics, refreshAnalytics } from "./analytics.js";
+import { initAbout } from "./about.js";
 import { parseChartCall } from "./chart-common.js";
 import { renderChart } from "./chart-render.js";
 import { renderImage, renderSvg } from "./media-render.js";
@@ -58,6 +59,7 @@ initRepoAttach({
 initContext();
 initWorkspace();
 initAnalytics();
+initAbout();
 
 // Mobile: the left nav + session list and the workspace folder tree live in
 // off-canvas drawers, and the context panel becomes a bottom sheet — all
@@ -107,6 +109,18 @@ for (const navItem of document.querySelectorAll(".nav-item")) {
     if (navItem.dataset.view === "analytics") refreshAnalytics();
     if (isMobile()) setSidebarOpen(false);
   });
+}
+
+$("about-get-started").addEventListener("click", () => {
+  document.querySelector('.nav-item[data-view="sessions"]').click();
+});
+
+// First-ever visit to this browser lands on the About view instead of an
+// empty Sessions composer; every visit after that goes straight to Sessions
+// (or wherever the user last was) as before.
+if (!localStorage.getItem("cooper-visited")) {
+  localStorage.setItem("cooper-visited", "1");
+  document.querySelector('.nav-item[data-view="about"]').click();
 }
 
 // Context panel: on desktop a collapsible sidebar column (persisted); on

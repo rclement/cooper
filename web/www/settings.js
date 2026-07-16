@@ -82,6 +82,24 @@ function ensureValidDefaults() {
   }
 }
 
+/// Pushes a new provider, optionally with one starter model (made the
+/// default so it's immediately usable) — shared by the Settings form and
+/// the About page's onboarding shortcut. Returns false without changing
+/// anything if the required fields are missing.
+export function addProvider({ name, baseUrl, apiKey, model }) {
+  if (!name || !baseUrl) return false;
+  const provider = { id: uid(), name, baseUrl, apiKey, models: model ? [model] : [] };
+  settings.providers.push(provider);
+  if (model) {
+    settings.defaultProviderId = provider.id;
+    settings.defaultModel = model;
+  }
+  ensureValidDefaults();
+  persist();
+  renderAll();
+  return true;
+}
+
 export function getCurrentConfig() {
   if (settings.defaultProviderId === LOCAL_PROVIDER_ID) {
     const model = findLocalModel(settings.defaultModel);
@@ -495,13 +513,7 @@ export function initSettings() {
     const name = $("new-provider-name").value.trim();
     const baseUrl = $("new-provider-base-url").value.trim();
     const apiKey = $("new-provider-api-key").value;
-    if (!name || !baseUrl) return;
-
-    settings.providers.push({ id: uid(), name, baseUrl, apiKey, models: [] });
-    event.target.reset();
-    ensureValidDefaults();
-    persist();
-    renderAll();
+    if (addProvider({ name, baseUrl, apiKey, model: null })) event.target.reset();
   });
 
   $("reset-settings").addEventListener("click", () => {
