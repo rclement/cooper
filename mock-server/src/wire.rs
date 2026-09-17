@@ -70,7 +70,7 @@ impl From<&crate::fixture::FixtureUsage> for ApiUsage {
 /// blob — while still reconstructing to the exact original text.
 const CHUNK_SIZE: usize = 8;
 
-fn chunk_str(s: &str) -> Vec<String> {
+pub(crate) fn chunk_str(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
     if chars.is_empty() {
         return vec![];

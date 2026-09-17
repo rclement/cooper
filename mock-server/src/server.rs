@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use futures_util::{StreamExt, stream};
 
+use crate::anthropic_wire::build_anthropic_sse_events;
 use crate::fixture::Fixture;
 use crate::wire::build_sse_payloads;
 
@@ -27,6 +28,7 @@ pub fn app(fixture: Fixture) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state)
 }
@@ -59,6 +61,36 @@ async fn chat_completions(State(state): State<Arc<AppState>>) -> Response {
             .map(|p| Ok::<_, Infallible>(Event::default().data(p))),
     )
     .chain(stream::once(async { Ok(Event::default().data("[DONE]")) }));
+
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Cycles through `fixture.responses` the same way `chat_completions` does,
+/// but speaks the Anthropic Messages API's SSE shape: every event carries an
+/// explicit `event:` name, and the stream ends with `message_stop` rather
+/// than a `[DONE]` sentinel.
+async fn messages(State(state): State<Arc<AppState>>) -> Response {
+    if state.fixture.responses.is_empty() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cooper-mock-server: fixture has no responses configured".to_string(),
+        )
+            .into_response();
+    }
+
+    let index = state.next_index.fetch_add(1, Ordering::SeqCst);
+    let response = &state.fixture.responses[index % state.fixture.responses.len()];
+
+    let id = format!("msg-mock-{index}");
+    let events = build_anthropic_sse_events(response, &id);
+
+    let events = stream::iter(
+        events
+            .into_iter()
+            .map(|(name, data)| Ok::<_, Infallible>(Event::default().event(name).data(data))),
+    );
 
     Sse::new(events)
         .keep_alive(KeepAlive::default())
@@ -111,6 +143,30 @@ mod tests {
         let response = router.oneshot(request()).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn messages_endpoint_streams_anthropic_style_events_with_no_done_sentinel() {
+        let router = app(one_response_fixture());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body.contains("event: message_start"));
+        assert!(body.contains("event: message_stop"));
+        assert!(!body.contains("[DONE]"));
     }
 
     #[tokio::test]

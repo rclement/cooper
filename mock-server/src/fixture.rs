@@ -3,9 +3,11 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-/// A scripted sequence of OpenAI-chat-completions-compatible responses,
-/// served one per request in order. Add a fixture by dropping a YAML file
-/// under `fixtures/` — no Rust changes needed.
+/// A scripted sequence of provider responses, served one per request in
+/// order and translated into either the OpenAI chat completions wire shape
+/// (see `wire.rs`) or the Anthropic Messages API wire shape (see
+/// `anthropic_wire.rs`) depending on which endpoint is hit. Add a fixture by
+/// dropping a YAML file under `fixtures/` — no Rust changes needed.
 #[derive(Debug, Deserialize)]
 pub struct Fixture {
     pub responses: Vec<FixtureResponse>,

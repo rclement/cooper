@@ -1,3 +1,5 @@
+pub mod anthropic_messages;
+pub mod anthropic_wire;
 pub mod openai_completions;
 pub mod openai_wire;
 

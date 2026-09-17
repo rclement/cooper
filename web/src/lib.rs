@@ -6,6 +6,7 @@ use cooper_core::agent::{
     self, AgentEventsHandler, AgentMessageChunk, FinishReason, Message, ToolCall,
 };
 use cooper_core::providers::Provider;
+use cooper_core::providers::anthropic_messages::AnthropicMessagesAPI;
 use cooper_core::providers::openai_completions::OpenAICompletionsAPI;
 use cooper_core::providers::openai_wire::{
     ApiCompletionRequest, ApiMessage, ApiStreamChunk, ApiTool, ChatStreamAccumulator,
@@ -27,8 +28,24 @@ struct ContextFile {
     content: String,
 }
 
+/// Which remote API the agent speaks to at `base_url`. Mirrors the CLI's
+/// `provider_type` setting; the in-browser local model is not one of these
+/// — it bypasses HTTP entirely via `set_completion_bridge`.
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum RemoteProviderType {
+    #[default]
+    OpenaiCompletions,
+    AnthropicMessages,
+    /// The UI sends `"local"` for the in-browser model; it must still parse,
+    /// but is never used to build an HTTP provider.
+    Local,
+}
+
 #[derive(Deserialize)]
 struct AgentConfig {
+    #[serde(default)]
+    provider_type: RemoteProviderType,
     /// Unused (and may be omitted) when a completion bridge is set — the
     /// local provider has no endpoint to talk to.
     #[serde(default)]
@@ -205,7 +222,9 @@ pub struct WasmAgent {
 
 #[wasm_bindgen]
 impl WasmAgent {
-    /// `config_json` fields: `base_url`, `api_key`, `model`, and optionally
+    /// `config_json` fields: `base_url`, `api_key`, `model`, optionally
+    /// `provider_type` (`"openai-completions"`, the default, or
+    /// `"anthropic-messages"`), and optionally
     /// `system_prompt_template`, `agent_instructions`, `context_files`
     /// (`[{ path, content }]`), and `working_dir`.
     #[wasm_bindgen(constructor)]
@@ -280,11 +299,20 @@ impl WasmAgent {
                 model: self.config.model.clone(),
                 complete_fn: complete_fn.clone(),
             }),
-            None => Box::new(OpenAICompletionsAPI::new(
-                &self.config.base_url,
-                &self.config.api_key,
-                &self.config.model,
-            )),
+            None => match self.config.provider_type {
+                RemoteProviderType::AnthropicMessages => Box::new(AnthropicMessagesAPI::new(
+                    &self.config.base_url,
+                    &self.config.api_key,
+                    &self.config.model,
+                )),
+                RemoteProviderType::OpenaiCompletions | RemoteProviderType::Local => {
+                    Box::new(OpenAICompletionsAPI::new(
+                        &self.config.base_url,
+                        &self.config.api_key,
+                        &self.config.model,
+                    ))
+                }
+            },
         };
         let system_prompt_template = self.config.system_prompt_template.clone();
         let agent_instructions = self.config.agent_instructions.clone();
