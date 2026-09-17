@@ -246,6 +246,11 @@ fn setup_agent(
             &provider_config.api_key,
             &model_name,
         )),
+        "anthropic-messages" => Box::new(providers::anthropic_messages::AnthropicMessagesAPI::new(
+            &provider_config.base_url,
+            &provider_config.api_key,
+            &model_name,
+        )),
         _ => {
             eprintln!("unknown provider type: {}", provider_config.provider_type);
             std::process::exit(1);

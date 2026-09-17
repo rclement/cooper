@@ -45,16 +45,28 @@ export function initAbout() {
     });
   });
 
+  const BASE_URL_PLACEHOLDERS = {
+    "openai-completions": "https://api.openai.com/v1",
+    "anthropic-messages": "https://api.anthropic.com/v1",
+  };
+
+  $("about-provider-type").addEventListener("change", (event) => {
+    $("about-provider-base-url").placeholder =
+      BASE_URL_PLACEHOLDERS[event.target.value] ?? "";
+  });
+
   $("about-provider-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const name = $("about-provider-name").value.trim();
+    const providerType = $("about-provider-type").value;
     const baseUrl = $("about-provider-base-url").value.trim();
     const apiKey = $("about-provider-api-key").value;
     const model = $("about-provider-model").value.trim();
     const statusEl = $("about-provider-status");
 
-    if (addProvider({ name, baseUrl, apiKey, model: model || null })) {
+    if (addProvider({ name, baseUrl, apiKey, model: model || null, providerType })) {
       event.target.reset();
+      $("about-provider-base-url").placeholder = BASE_URL_PLACEHOLDERS["openai-completions"];
       statusEl.textContent = model
         ? `Saved — "${name}" is ready to use.`
         : `Saved — add a model for "${name}" in Settings before using it.`;

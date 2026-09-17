@@ -194,9 +194,19 @@ providers:
     models:
       - id: gpt-4o-mini
       - id: gpt-4o
+
+  anthropic:
+    provider_type: anthropic-messages
+    base_url: https://api.anthropic.com/v1
+    api_key: sk-ant-...
+    models:
+      - id: claude-opus-5
+      - id: claude-sonnet-5
 ```
 
-Currently supported provider type: `openai-completions`.
+Supported provider types: `openai-completions` (OpenAI chat completions and
+compatible servers such as Ollama, LM Studio, vLLM) and `anthropic-messages`
+(Anthropic Messages API).
 
 ## Layout
 

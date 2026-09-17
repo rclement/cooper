@@ -29,6 +29,10 @@ function load() {
       const parsed = JSON.parse(raw);
       // Tolerate settings persisted before `localModels` existed.
       if (!Array.isArray(parsed.localModels)) parsed.localModels = [];
+      // Tolerate settings persisted before `providerType` existed.
+      for (const provider of parsed.providers ?? []) {
+        if (!provider.providerType) provider.providerType = "openai-completions";
+      }
       return parsed;
     } catch {
       // fall through to a fresh seed if the stored value is corrupt
@@ -86,9 +90,16 @@ function ensureValidDefaults() {
 /// default so it's immediately usable) — shared by the Settings form and
 /// the About page's onboarding shortcut. Returns false without changing
 /// anything if the required fields are missing.
-export function addProvider({ name, baseUrl, apiKey, model }) {
+export function addProvider({ name, baseUrl, apiKey, model, providerType }) {
   if (!name || !baseUrl) return false;
-  const provider = { id: uid(), name, baseUrl, apiKey, models: model ? [model] : [] };
+  const provider = {
+    id: uid(),
+    name,
+    baseUrl,
+    apiKey,
+    models: model ? [model] : [],
+    providerType: providerType || "openai-completions",
+  };
   settings.providers.push(provider);
   if (model) {
     settings.defaultProviderId = provider.id;
@@ -123,6 +134,7 @@ export function getCurrentConfig() {
     base_url: provider.baseUrl,
     api_key: provider.apiKey,
     model: settings.defaultModel,
+    provider_type: provider.providerType,
     // Not sent to the agent — for the caller to attach to session metadata
     // without persisting the API key itself.
     providerId: provider.id,
@@ -143,6 +155,34 @@ function fieldRow(labelText, value, onChange, type = "text") {
   input.addEventListener("change", () => onChange(input.value));
 
   field.append(label, input);
+  return field;
+}
+
+// Provider type placeholders — the client appends the endpoint path itself,
+// so the base URL only needs to name the API root.
+const BASE_URL_PLACEHOLDERS = {
+  "openai-completions": "https://api.openai.com/v1",
+  "anthropic-messages": "https://api.anthropic.com/v1",
+};
+
+function selectRow(labelText, value, options, onChange) {
+  const field = document.createElement("div");
+  field.className = "field";
+
+  const label = document.createElement("label");
+  label.textContent = labelText;
+
+  const select = document.createElement("select");
+  for (const { value: optValue, label: optLabel } of options) {
+    const opt = document.createElement("option");
+    opt.value = optValue;
+    opt.textContent = optLabel;
+    select.appendChild(opt);
+  }
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+
+  field.append(label, select);
   return field;
 }
 
@@ -181,11 +221,29 @@ function renderProviderBlock(provider) {
 
   const fields = document.createElement("div");
   fields.className = "provider-fields";
+
+  const baseUrlField = fieldRow("Base URL", provider.baseUrl, (value) => {
+    provider.baseUrl = value;
+    persist();
+  });
+  const baseUrlInput = baseUrlField.querySelector("input");
+  baseUrlInput.placeholder = BASE_URL_PLACEHOLDERS[provider.providerType] ?? "";
+
   fields.append(
-    fieldRow("Base URL", provider.baseUrl, (value) => {
-      provider.baseUrl = value;
-      persist();
-    }),
+    selectRow(
+      "API",
+      provider.providerType,
+      [
+        { value: "openai-completions", label: "OpenAI chat completions" },
+        { value: "anthropic-messages", label: "Anthropic messages" },
+      ],
+      (value) => {
+        provider.providerType = value;
+        baseUrlInput.placeholder = BASE_URL_PLACEHOLDERS[value] ?? "";
+        persist();
+      },
+    ),
+    baseUrlField,
     fieldRow(
       "API key",
       provider.apiKey,
@@ -508,12 +566,21 @@ export function initSettings() {
     renderModelIndicator();
   });
 
+  $("new-provider-type").addEventListener("change", (event) => {
+    $("new-provider-base-url").placeholder =
+      BASE_URL_PLACEHOLDERS[event.target.value] ?? "";
+  });
+
   $("add-provider-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const name = $("new-provider-name").value.trim();
+    const providerType = $("new-provider-type").value;
     const baseUrl = $("new-provider-base-url").value.trim();
     const apiKey = $("new-provider-api-key").value;
-    if (addProvider({ name, baseUrl, apiKey, model: null })) event.target.reset();
+    if (addProvider({ name, baseUrl, apiKey, model: null, providerType })) {
+      event.target.reset();
+      $("new-provider-base-url").placeholder = BASE_URL_PLACEHOLDERS["openai-completions"];
+    }
   });
 
   $("reset-settings").addEventListener("click", () => {

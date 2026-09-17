@@ -75,6 +75,38 @@ responses:
 }
 
 #[test]
+fn a_prompt_works_the_same_over_the_anthropic_messages_api() {
+    let base_url = start_mock_provider(
+        r#"
+responses:
+  - tool_calls:
+      - id: call-1
+        name: exec_cmd
+        arguments:
+          command: "echo PONG"
+  - text: "the command printed PONG"
+    usage:
+      prompt_tokens: 42
+      completion_tokens: 3
+      total_tokens: 45
+"#,
+    );
+    let cli = Cli::with_provider_type(&base_url, "anthropic-messages");
+
+    let output = cli.run(&["prompt", "ping"]);
+
+    assert!(output.status.success());
+    let stdout = stdout(&output);
+    assert!(stdout.contains("[tool call] exec_cmd"));
+    assert!(stdout.contains("[tool result]"));
+    assert!(stdout.contains("PONG"));
+    assert!(stdout.contains("the command printed PONG"));
+    assert!(
+        stdout.contains("[usage] prompt tokens = 42, completion tokens = 3, total tokens = 45")
+    );
+}
+
+#[test]
 fn agent_instructions_and_context_files_are_read_before_the_turn() {
     let base_url = start_mock_provider(&reply_fixture("understood"));
     let cli = Cli::with_provider(&base_url);

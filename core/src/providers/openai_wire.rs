@@ -389,6 +389,7 @@ impl ChatStreamAccumulator {
                 total_tokens: u.total_tokens,
             }),
             at_ms: None,
+            provider_content: None,
         };
 
         let finish_reason = match self.finish_reason.as_deref() {

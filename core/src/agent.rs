@@ -94,6 +94,19 @@ pub enum Message {
         usage: Option<Usage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_ms: Option<i64>,
+        /// The provider's own content blocks for this reply, kept verbatim.
+        ///
+        /// `text`, `reasoning` and `tool_calls` above are the shared,
+        /// provider-neutral view of a reply — enough to display it and to
+        /// run tools. Some providers, however, need to see their *exact*
+        /// output again on the next turn: the Anthropic Messages API signs
+        /// its thinking blocks and refuses a tool-use turn whose thinking
+        /// was dropped or altered. Rather than teach the shared model every
+        /// provider's quirks, the provider that produced the reply stores
+        /// what it needs here and reads it back when rebuilding the next
+        /// request. Providers that need nothing leave it `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_content: Option<serde_json::Value>,
     },
     Tool {
         call_id: String,
@@ -119,6 +132,7 @@ impl Message {
             response_duration_ms: None,
             usage: None,
             at_ms: None,
+            provider_content: None,
         }
     }
 }
@@ -822,6 +836,7 @@ mod tests {
                     total_tokens: 15,
                 }),
                 at_ms: None,
+                provider_content: None,
             };
             Ok((message, FinishReason::Stop))
         })]);

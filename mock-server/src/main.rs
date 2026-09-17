@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use cooper_mock_server::Fixture;
 
-/// Serves canned OpenAI-chat-completions-compatible SSE responses from a YAML
-/// fixture file, for deterministic local and end-to-end testing.
+/// Serves canned SSE responses, compatible with both the OpenAI chat
+/// completions API and the Anthropic Messages API, from a YAML fixture file,
+/// for deterministic local and end-to-end testing.
 #[derive(clap::Parser)]
 #[command(version, about)]
 struct Args {
